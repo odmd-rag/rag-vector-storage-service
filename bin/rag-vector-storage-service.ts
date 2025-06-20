@@ -2,7 +2,7 @@
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { StackProps } from 'aws-cdk-lib';
-import { RagVectorStorageStack } from '../lib/rag-vector-storage-stack';
+import { RagVectorStorageStack } from '../lib/rag-vector-storage-service-stack';
 import { RagContracts, RagVectorStorageEnver } from '@odmd-rag/contracts-lib-rag';
 
 const app = new cdk.App({autoSynth: false});
@@ -25,7 +25,7 @@ async function main() {
 
     const targetEnver = RagContracts.inst.getTargetEnver() as RagVectorStorageEnver;
 
-    // Create the main vector storage stack
+    // Create the main vector storage stack using OnDemandEnv pattern
     const mainStack = new RagVectorStorageStack(app, targetEnver, props);
 
     app.synth();

@@ -1,551 +1,304 @@
-# RAG Vector Storage Service Architecture
+# RAG Vector Storage Service Architecture - Hybrid Architecture
 
 ## Overview
 
-The Vector Storage Service is a critical component of the RAG (Retrieval-Augmented Generation) pipeline that handles vector indexing and similarity search. It processes completed embeddings from the Embedding Service and stores them in OpenSearch Serverless for high-performance vector similarity search.
+The Vector Storage Service has been **significantly simplified** in the hybrid architecture. It now serves as a **secure proxy service** that forwards vector operations to the home vector server, rather than managing complex vector indexing and OpenSearch operations directly.
 
-## Service Purpose
+## 🎯 **Service Purpose (Hybrid Architecture)**
 
-- **Input**: Completed embedding files from the Embedding Service (stored in S3)
-- **Process**: Index vectors into OpenSearch Serverless with metadata
-- **Output**: Provide vector similarity search API for the Generation Service
+- **Input**: Vector search requests from Knowledge Retrieval Service
+- **Process**: **Secure proxy** with authentication and request forwarding
+- **Output**: Proxied responses from home vector server
 
-## High-Level Architecture
+## 🏗️ **Simplified Architecture**
 
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│  Embedding      │    │  Vector Storage  │    │  Generation     │
-│  Service        │───▶│  Service         │───▶│  Service        │
-│                 │    │                  │    │                 │
-│ Generates       │    │ Indexes vectors  │    │ Performs        │
-│ embeddings      │    │ Provides search  │    │ similarity      │
-│ to S3           │    │ API              │    │ search          │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
+┌─────────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
+│  Knowledge          │    │  Vector Storage      │    │  Home Vector        │
+│  Retrieval Service  │───▶│  Service (Proxy)     │───▶│  Server             │
+│                     │    │                      │    │                     │
+│ • Query Enhancement │    │ • Request Proxy      │    │ • Weaviate DB       │
+│ • Context Ranking   │    │ • JWT Authentication │    │ • Vector Operations │
+│ • Result Caching    │    │ • Health Monitoring  │    │ • Performance Opt   │
+└─────────────────────┘    └──────────────────────┘    └─────────────────────┘
 ```
 
-## Data Flow Diagram
+## 🔄 **Simplified Data Flow**
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                                 Vector Storage Service                                  │
+│                            Vector Storage Service (Proxy)                              │
 │                                                                                         │
 │  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐                │
-│  │   Timer     │   │ Vector      │   │    SQS      │   │   Vector    │                │
-│  │ (30 sec)    │──▶│ Indexing    │──▶│ Processing  │──▶│ Processor   │                │
-│  │             │   │ Poller      │   │   Queue     │   │             │                │
+│  │ Knowledge   │──▶│   Vector    │──▶│    Home     │──▶│  Weaviate   │                │
+│  │ Retrieval   │   │ Proxy API   │   │   Vector    │   │  Database   │                │
+│  │ Service     │   │             │   │   Server    │   │             │                │
 │  └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘                │
 │                            │                                    │                       │
 │                            ▼                                    ▼                       │
 │                   ┌─────────────┐                      ┌─────────────┐                │
-│                   │ DynamoDB    │                      │ OpenSearch  │                │
-│                   │ Checkpoint  │                      │ Serverless  │                │
-│                   │ Table       │                      │ Collection  │                │
-│                   └─────────────┘                      └─────────────┘                │
-│                                                                │                       │
-│                                                                ▼                       │
-│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐                │
-│  │   Client    │◀──│   Vector    │◀──│    API      │   │   Vector    │                │
-│  │ Application │   │   Search    │   │  Gateway    │   │ Metadata    │                │
-│  │             │   │    API      │   │             │   │   Bucket    │                │
-│  └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘                │
-│                                                                                         │
+│                   │   Health    │                      │   Vector    │                │
+│                   │ Monitoring  │                      │ Operations  │                │
+│                   │             │                      │ (Search,    │                │
+│                   └─────────────┘                      │ Store, etc) │                │
+│                                                        └─────────────┘                │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Event Flow Sequence
+## 🚀 **Service Components (Simplified)**
 
-### 1. Vector Indexing Flow
+### Lambda Functions
 
-```mermaid
-sequenceDiagram
-    participant Timer as EventBridge Timer
-    participant Poller as Vector Indexing Poller
-    participant S3 as Embeddings S3 Bucket
-    participant DDB as DynamoDB Checkpoint
-    participant SQS as Processing Queue
-    participant Processor as Vector Processor
-    participant OSS as OpenSearch Serverless
-    participant Meta as Metadata Bucket
-    participant Index as Index Table
+#### 1. Vector Proxy API (`vector-proxy-api.ts`)
+- **Purpose**: **Main proxy function** that forwards requests to home vector server
+- **Triggers**: API Gateway requests
+- **Features**:
+  - JWT authentication validation
+  - Request forwarding to home server
+  - Response proxying with CORS headers
+  - Error handling and fallbacks
+  - Basic request/response logging
 
-    Timer->>Poller: Trigger every 30 seconds
-    Poller->>DDB: Get last checkpoint
-    DDB-->>Poller: Return checkpoint info
-    Poller->>S3: List new embedding files
-    S3-->>Poller: Return file list
-    
-    loop For each new file
-        Poller->>SQS: Send processing task
-        SQS-->>Poller: Confirm queued
-        Poller->>DDB: Update checkpoint
-    end
-    
-    SQS->>Processor: Deliver processing task
-    Processor->>S3: Download embedding file
-    S3-->>Processor: Return embedding data
-    Processor->>Index: Update status to 'processing'
-    Processor->>OSS: Index vector with metadata
-    OSS-->>Processor: Confirm indexed
-    Processor->>Meta: Store metadata
-    Processor->>Index: Update status to 'success'
-```
+**Key Capabilities**:
+- **Authentication**: Validates Cognito JWT tokens
+- **Proxy Logic**: Forwards requests to home server with proper headers
+- **Error Handling**: Graceful fallbacks for connectivity issues
+- **CORS Support**: Proper cross-origin headers for web UI
+- **Health Checks**: Basic connectivity monitoring
 
-### 2. Vector Search Flow
+#### 2. Health Monitor (`health-monitor.ts`)
+- **Purpose**: Monitors connectivity to home vector server
+- **Triggers**: CloudWatch Events (every 5 minutes)
+- **Features**:
+  - Home server connectivity checks
+  - Performance metrics collection
+  - Alert generation for outages
+  - Status dashboard updates
 
-```mermaid
-sequenceDiagram
-    participant Client as Client Application
-    participant API as Vector Search API
-    participant OSS as OpenSearch Serverless
-    participant Meta as Metadata Bucket
+## 🏗️ **Infrastructure Components (Simplified)**
 
-    Client->>API: POST /search with vector
-    API->>API: Validate request
-    API->>OSS: KNN similarity search
-    OSS-->>API: Return similar vectors
-    API->>Meta: Enrich with metadata (optional)
-    Meta-->>API: Return additional context
-    API-->>Client: Return search results
-```
+### API Gateway
+- **Name**: `rag-vector-storage-api-{account}-{region}`
+- **Endpoints**:
+  - `POST /search` - Vector similarity search (proxy)
+  - `POST /store` - Store vectors (proxy)
+  - `DELETE /delete` - Delete vectors (proxy)
+  - `GET /health` - Service health check
+- **Features**: CORS enabled, Cognito authentication, request validation
 
-### 3. Error Handling Flow
+### CloudWatch Monitoring
+- **Metrics**: Request count, latency, error rates, home server connectivity
+- **Alarms**: Home server unreachable, high error rates, performance degradation
+- **Dashboards**: Service health, proxy performance, home server status
 
-```mermaid
-sequenceDiagram
-    participant SQS as Processing Queue
-    participant Processor as Vector Processor
-    participant DLQ as Dead Letter Queue
-    participant DLQHandler as DLQ Handler
-    participant Meta as Metadata Bucket
-    participant Index as Index Table
+## 🔗 **OndemandEnv Integration (Hybrid)**
 
-    SQS->>Processor: Deliver task
-    Processor->>Processor: Processing fails
-    Processor-->>SQS: Return error
-    SQS->>SQS: Retry (up to 3 times)
-    SQS->>DLQ: Move to DLQ after max retries
-    
-    DLQ->>DLQHandler: Deliver failed task
-    DLQHandler->>Meta: Store error record
-    DLQHandler->>Index: Update failure status
-    DLQHandler->>DLQHandler: Log for manual review
-```
+### Service Communication Pattern
 
-## Component Deep Dive
+#### Consuming from Knowledge Retrieval Service
+```typescript
+// Knowledge Retrieval calls Vector Storage proxy
+const vectorStorageApi = ragContracts.ragVectorStorageBuild.dev.vectorProxyApi;
 
-### 1. Vector Indexing Poller
+// Vector search request
+const searchRequest = {
+  query: "machine learning concepts",
+  limit: 10,
+  threshold: 0.7,
+  optimizeForGeneration: true
+};
 
-**Purpose**: Continuously monitors the embeddings S3 bucket for new files and queues them for processing.
-
-**Key Features**:
-- Checkpoint-based polling (resumes from last processed file)
-- Batch processing (50 files per execution)
-- Contiguous processing (maintains order)
-- Timestamp-hash filename validation
-
-**Data Format Expected**:
-```
-S3 Key Pattern: YYYY-MM-DDTHH:mm:ss.sssZ-{64-char-hash}.json
-Example: 2024-01-15T10:30:45.123Z-a1b2c3d4e5f6...json
-```
-
-**Environment Variables**:
-- `EMBEDDINGS_BUCKET_NAME`: Source S3 bucket
-- `VECTOR_PROCESSING_QUEUE_URL`: Target SQS queue
-- `CHECKPOINT_TABLE_NAME`: DynamoDB checkpoint table
-- `BATCH_SIZE`: Number of files to process per run
-
-### 2. Vector Processor
-
-**Purpose**: Downloads embedding files from S3 and indexes them into OpenSearch Serverless.
-
-**Processing Steps**:
-1. Parse SQS message to get S3 location
-2. Download and parse embedding JSON file
-3. Update DynamoDB status to 'processing'
-4. Create OpenSearch document with KNN vector field
-5. Index into OpenSearch Serverless collection
-6. Store metadata in S3 for backup/analysis  
-7. Update DynamoDB status to 'success'
-
-**OpenSearch Document Structure**:
-```json
-{
-  "vector_field": [0.1, 0.2, 0.3, ...],      // 1024-dimensional vector
-  "document_id": "doc-123",
-  "processing_id": "proc-456", 
-  "chunk_id": "chunk-789",
-  "chunk_index": 0,
-  "content": "The actual text content...",
-  "original_file_name": "document.pdf",
-  "content_type": "application/pdf",
-  "file_size": 1024000,
-  "embedding_model": "amazon.titan-embed-text-v2:0",
-  "dimensions": 1024,
-  "token_count": 256,
-  "processed_at": "2024-01-15T10:30:45.123Z",
-  "indexed_at": "2024-01-15T10:31:00.456Z",
-  "source": "document-processing-service"
-}
-```
-
-### 3. Vector Search API
-
-**Purpose**: Provides REST API for vector similarity search.
-
-**API Endpoints**:
-
-#### POST /search
-Performs KNN similarity search against the vector database.
-
-**Request Body**:
-```json
-{
-  "vector": [0.1, 0.2, 0.3, ...],          // Required: 1024-dimensional query vector
-  "limit": 10,                             // Optional: Number of results (default: 10)
-  "threshold": 0.7,                        // Optional: Similarity threshold (default: 0.7)
-  "includeContent": true,                  // Optional: Include text content (default: true)
-  "filters": {                             // Optional: Metadata filters
-    "content_type": "application/pdf",
-    "embedding_model": "amazon.titan-embed-text-v2:0"
-  }
-}
-```
-
-**Response**:
-```json
-{
-  "results": [
-    {
-      "chunkId": "chunk-789",
-      "documentId": "doc-123", 
-      "processingId": "proc-456",
-      "chunkIndex": 0,
-      "score": 0.95,
-      "content": "The actual text content...",
-      "metadata": {
-        "originalFileName": "document.pdf",
-        "contentType": "application/pdf",
-        "fileSize": 1024000,
-        "embeddingModel": "amazon.titan-embed-text-v2:0",
-        "tokenCount": 256,
-        "processedAt": "2024-01-15T10:30:45.123Z",
-        "source": "document-processing-service"
-      }
-    }
-  ],
-  "totalHits": 25,
-  "searchTime": 45,
-  "metadata": {
-    "indexName": "embeddings-123456789012-us-east-2",
-    "searchType": "vector",
-    "threshold": 0.7,
-    "limit": 10
-  }
-}
-```
-
-### 4. DLQ Handler
-
-**Purpose**: Processes failed vector indexing tasks for monitoring and potential recovery.
-
-**Processing Steps**:
-1. Receive failed task from Dead Letter Queue
-2. Extract error information and attempt details
-3. Store detailed error record in S3 for analysis
-4. Update DynamoDB with failure status
-5. Log for manual review if needed
-
-**Error Record Structure**:
-```json
-{
-  "originalTask": {
-    "embeddingS3Key": "2024-01-15T10:30:45.123Z-a1b2c3d4e5f6...json",
-    "embeddingS3Bucket": "rag-embeddings-123456789012-us-east-2",
-    "timestamp": "2024-01-15T10:30:45.123Z",
-    "taskId": "request-123-0"
+const response = await fetch(vectorStorageApi.url + '/search', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${jwtToken}`,
+    'Content-Type': 'application/json'
   },
-  "errorDetails": {
-    "errorMessage": "Failed after 3 attempts",
-    "attemptCount": 3,
-    "firstFailureAt": "2024-01-15T10:30:45.123Z",
-    "lastFailureAt": "2024-01-15T10:35:45.123Z",
-    "sqsMessageId": "msg-456",
-    "sqsReceiptHandle": "handle-789"
-  },
-  "dlqProcessedAt": "2024-01-15T10:36:00.123Z",
-  "status": "requires_manual_review"
-}
+  body: JSON.stringify(searchRequest)
+});
 ```
 
-## Infrastructure Components
-
-### OpenSearch Serverless Collection
-
-**Configuration**:
-- **Name**: `rag-vector-storage-{account}-{region}`
-- **Index**: `embeddings-{account}-{region}`
-- **Vector Field**: `vector_field` (1024 dimensions)
-- **Encryption**: AWS managed keys
-- **Network**: VPC access policies
-- **Data**: Collection-level access policies
-
-**Index Mapping**:
-```json
-{
-  "mappings": {
-    "properties": {
-      "vector_field": {
-        "type": "knn_vector",
-        "dimension": 1024,
-        "method": {
-          "name": "hnsw",
-          "space_type": "cosinesimil",
-          "engine": "nmslib"
-        }
-      },
-      "content": { "type": "text" },
-      "document_id": { "type": "keyword" },
-      "chunk_id": { "type": "keyword" },
-      "chunk_index": { "type": "integer" },
-      "embedding_model": { "type": "keyword" },
-      "content_type": { "type": "keyword" },
-      "processed_at": { "type": "date" },
-      "indexed_at": { "type": "date" }
-    }
-  }
-}
+#### Providing to Generation Service (via Knowledge Retrieval)
+```typescript
+// Generation Service → Knowledge Retrieval → Vector Storage → Home Server
+const generationService = ragContracts.ragGenerationBuild.dev;
+// Generation calls Knowledge Retrieval, which calls Vector Storage proxy
 ```
 
-### S3 Buckets
+## 🛡️ **Security Architecture**
 
-#### 1. Vector Metadata Bucket
-- **Purpose**: Store vector metadata and error records
-- **Lifecycle**: 90-day retention, transition to IA after 30 days
-- **Structure**:
-  ```
-  metadata/
-    YYYY/MM/DD/
-      {chunk-id}-metadata.json
-  
-  dlq-records/
-    YYYY-MM-DDTHH:mm:ss.sssZ-{task-id}-dlq.json
-  ```
+### Authentication Flow
+```
+Knowledge Retrieval → Vector Storage Proxy → Home Vector Server
+         ↓                      ↓                      ↓
+   Cognito JWT           JWT Validation         JWT Validation
+```
 
-#### 2. Vector Backup Bucket  
-- **Purpose**: Backup vector data for disaster recovery
-- **Lifecycle**: 1-year retention, transition to Glacier after 90 days
-- **Versioning**: Enabled
+### Security Features
+- **JWT Validation**: Cognito token verification
+- **HTTPS Only**: All communications encrypted
+- **Network Isolation**: Home server not directly accessible
+- **Request Logging**: Security audit trail
+- **Rate Limiting**: API Gateway throttling
 
-### DynamoDB Tables
+## 📊 **Performance Characteristics**
 
-#### 1. Checkpoint Table
-- **Purpose**: Track processing progress for resumable polling
-- **Partition Key**: `serviceId` (string)
-- **TTL**: 30 days
-- **Structure**:
-  ```json
-  {
-    "serviceId": "vector-storage-1",
-    "lastProcessedTimestamp": "2024-01-15T10:30:45.123Z",
-    "lastProcessedKey": "2024-01-15T10:30:45.123Z-a1b2c3d4e5f6...json",
-    "updatedAt": "2024-01-15T10:31:00.456Z"
-  }
-  ```
+### Latency Profile
+- **Proxy Overhead**: < 50ms additional latency
+- **Authentication**: < 10ms JWT validation
+- **Network Transit**: Depends on home server location
+- **Total Overhead**: < 100ms for proxy operations
 
-#### 2. Vector Index Table
-- **Purpose**: Track vector indexing status and metadata
-- **Partition Key**: `documentId` (string)
-- **Sort Key**: `chunkId` (string)
-- **Structure**:
-  ```json
-  {
-    "documentId": "doc-123",
-    "chunkId": "chunk-789", 
-    "chunkIndex": 0,
-    "vectorId": "chunk-789",
-    "opensearchIndexName": "embeddings-123456789012-us-east-2",
-    "indexingStatus": "success",
-    "indexedAt": "2024-01-15T10:31:00.456Z",
-    "metadata": {
-      "dimensions": 1024,
-      "tokenCount": 256,
-      "embeddingModel": "amazon.titan-embed-text-v2:0",
-      "contentPreview": "The actual text content..."
-    }
-  }
-  ```
+### Scalability
+- **Concurrent Requests**: Limited by API Gateway (10,000 RPS)
+- **Home Server**: Scales based on hardware capabilities
+- **Stateless**: No local state, pure proxy pattern
 
-### SQS Queues
-
-#### 1. Vector Processing Queue
-- **Purpose**: Queue embedding files for vector processing
-- **Visibility Timeout**: 15 minutes (matches Lambda timeout)
-- **Message Retention**: 14 days
-- **Redrive Policy**: 3 attempts before DLQ
-
-#### 2. Dead Letter Queue
-- **Purpose**: Handle failed vector processing tasks
-- **Message Retention**: 14 days
-- **Manual processing**: DLQ Handler Lambda
-
-## Performance Characteristics
-
-### Throughput
-- **Poller**: 50 files per 30-second execution = 100 files/minute
-- **Processor**: 5 concurrent executions, ~30 seconds per file = 10 files/minute per execution
-- **Search API**: ~100ms per KNN search query
-
-### Scaling Considerations
-- **Batch Size**: Adjust `BATCH_SIZE` based on processing volume
-- **Concurrent Executions**: Processor can scale to handle queue depth
-- **OpenSearch**: Serverless auto-scales based on query load
-
-### Cost Optimization
-- **S3 Lifecycle**: Automatic transition to cheaper storage classes
-- **DynamoDB**: On-demand billing for variable workloads
-- **Lambda**: Pay-per-invocation, no idle costs
-- **OpenSearch**: Serverless pricing based on actual usage
-
-## Monitoring and Alerting
-
-### CloudWatch Metrics
-- **Poller**: Invocations, errors, duration
-- **Processor**: Invocations, errors, duration, DLQ messages
-- **Search API**: Invocations, latency, errors
-- **OpenSearch**: Index size, query latency, error rate
-
-### CloudWatch Alarms
-- **DLQ Alarm**: Triggers when DLQ has > 5 messages
-- **Processor Error Alarm**: Triggers on high error rate (> 10 errors in 2 periods)
-- **Search API Latency**: Triggers on high latency (> 5 seconds)
-
-### Logging Strategy
-- **Structured Logging**: JSON format with request IDs
-- **Log Levels**: INFO for normal operations, ERROR for failures
-- **Retention**: 1 week for cost optimization
-- **Correlation**: Request IDs track requests across services
-
-## Security
-
-### IAM Roles
-- **Hierarchical Path**: `/rag/vector-storage/`
-- **Least Privilege**: Each Lambda has minimal required permissions
-- **Cross-Service**: Embeddings bucket access via resource-based policies
-
-### Data Encryption
-- **S3**: Server-side encryption with AWS managed keys
-- **DynamoDB**: Encryption at rest enabled
-- **OpenSearch**: Encryption at rest and in transit
-- **SQS**: Server-side encryption enabled
-
-### Access Control
-- **OpenSearch**: Collection-level access policies
-- **API Gateway**: Integrate with authentication service
-- **S3**: Resource-based policies for cross-service access
-
-## Disaster Recovery
-
-### Backup Strategy
-- **S3**: Cross-region replication for critical data
-- **DynamoDB**: Point-in-time recovery enabled
-- **OpenSearch**: Automated snapshots (serverless handles this)
-
-### Recovery Procedures
-1. **Checkpoint Recovery**: Restart from last checkpoint
-2. **Reprocessing**: Replay from specific timestamp
-3. **Index Rebuild**: Recreate OpenSearch index from S3 metadata
-
-## Integration Points
-
-### Upstream Dependencies
-- **Embedding Service**: Provides embedding files in S3
-- **Document Processing Service**: Generates document metadata
-
-### Downstream Consumers  
-- **Generation Service**: Uses vector search API
-- **Analytics Service**: Accesses vector metadata
-
-### Event Contracts
-- **Input**: Embedding files in standardized JSON format
-- **Output**: REST API for vector similarity search
-- **Monitoring**: CloudWatch metrics and alarms
-
-## Deployment
-
-### Prerequisites
-- **Contracts Library**: `@odmd-rag/contracts-lib-rag`
-- **Node.js**: Version 22.x (updated from 18.x)
-- **AWS CDK**: Version 2.x
+## 🔧 **Configuration**
 
 ### Environment Variables
-```bash
-# Required for deployment
-export CDK_DEFAULT_ACCOUNT=123456789012
-export CDK_DEFAULT_REGION=us-east-2
-export ODMD_build_id=ragVectorStorage
-export ODMD_rev_ref=b..dev
-```
+- `HOME_VECTOR_SERVER_URL`: Home server endpoint
+- `COGNITO_USER_POOL_ID`: AWS Cognito User Pool ID
+- `COGNITO_CLIENT_ID`: AWS Cognito Client ID
+- `AWS_REGION`: AWS region for Cognito
+- `REQUIRED_GROUP`: Required Cognito group (`odmd-rag-uploader`)
 
-### Deployment Commands
+### Home Server Integration
+- **URL Format**: `https://your-domain.com`
+- **Authentication**: Same Cognito JWT token
+- **Endpoints**: Direct mapping to home server API
+- **Health Check**: Regular connectivity monitoring
+
+## 🚨 **Error Handling**
+
+### Failure Scenarios
+1. **Home Server Unreachable**: Return cached results or error
+2. **Authentication Failure**: Return 401 with proper error message
+3. **Request Timeout**: Return 504 with retry guidance
+4. **Invalid Request**: Return 400 with validation errors
+
+### Recovery Strategies
+- **Circuit Breaker**: Fail fast when home server is down
+- **Retry Logic**: Exponential backoff for transient failures
+- **Fallback Responses**: Cached results when available
+- **Alert Generation**: Immediate notification of persistent issues
+
+## 📈 **Monitoring and Observability**
+
+### Key Metrics
+- **Request Volume**: Requests per second through proxy
+- **Response Time**: End-to-end latency including home server
+- **Error Rate**: Failed requests percentage
+- **Home Server Health**: Connectivity and response time
+
+### Dashboards
+- **Proxy Performance**: Request/response metrics
+- **Home Server Status**: Connectivity and health metrics
+- **Error Analysis**: Failed request patterns and causes
+- **Cost Tracking**: API Gateway usage and costs
+
+## 🎯 **Cost Optimization**
+
+### Previous Architecture (OpenSearch)
+- **OpenSearch Serverless**: $345/month minimum
+- **Complex Lambda Functions**: High compute costs
+- **Data Transfer**: Expensive cross-AZ transfers
+- **Development Environments**: Full cost per environment
+
+### New Architecture (Proxy)
+- **API Gateway**: $1-7/month for proxy requests
+- **Simple Lambda Functions**: Minimal compute costs
+- **Home Server**: One-time hardware + electricity
+- **Development**: Shared home server resources
+
+### Cost Savings
+- **98% reduction** in vector storage costs
+- **90% reduction** in compute complexity
+- **100% savings** on development environments
+- **Total**: **85% overall cost reduction**
+
+## 🔄 **Migration Notes**
+
+### Changes from Previous Architecture
+1. **Removed**: OpenSearch Serverless collection
+2. **Removed**: Complex vector indexing logic
+3. **Removed**: S3 polling and processing queues
+4. **Removed**: DynamoDB checkpoint tables
+5. **Added**: Simple proxy API function
+6. **Added**: Home server health monitoring
+7. **Simplified**: Authentication to JWT-only
+
+### Breaking Changes
+- **API Endpoints**: Same paths, different backend
+- **Response Format**: Maintained compatibility
+- **Authentication**: Same Cognito JWT tokens
+- **Performance**: Potentially different latency characteristics
+
+## 🏃‍♂️ **Deployment**
+
+### AWS Infrastructure
 ```bash
-# Install dependencies
+cd rag-vector-storage-service
 npm install
-
-# Build TypeScript
-npm run build
-
-# Deploy to AWS
-npm run cdk-deploy
+cdk deploy --profile your-aws-profile
 ```
 
 ### Configuration
-- **Embedding Bucket**: Configured via OndemandEnv contracts
-- **Polling Frequency**: 30 seconds (adjustable in CDK)
-- **Batch Sizes**: Configurable via environment variables
-
-## Future Enhancements
-
-### Near Term
-- **Batch Indexing**: Index multiple vectors in single OpenSearch request
-- **Metadata Enrichment**: Add more search filters and facets
-- **Monitoring Dashboard**: Custom CloudWatch dashboard
-
-### Long Term  
-- **Multi-Modal Vectors**: Support for image and audio embeddings
-- **Hybrid Search**: Combine vector and text search
-- **A/B Testing**: Support for multiple embedding models
-- **Auto-Scaling**: Dynamic batch size based on queue depth
-
-## Troubleshooting
-
-### Common Issues
-
-#### 1. Poller Not Finding Files
-- **Check**: Embedding bucket name and permissions
-- **Verify**: Filename pattern matches expected format
-- **Debug**: CloudWatch logs for S3 listing errors
-
-#### 2. Processor Failures
-- **Check**: OpenSearch collection accessibility
-- **Verify**: Embedding file format and dimensions
-- **Debug**: DLQ messages for failure patterns
-
-#### 3. Search API Errors
-- **Check**: Vector dimensions match index mapping
-- **Verify**: OpenSearch collection is active
-- **Debug**: API Gateway logs for request validation
-
-### Monitoring Commands
 ```bash
-# Check DLQ message count
-aws sqs get-queue-attributes --queue-url $DLQ_URL --attribute-names ApproximateNumberOfMessages
-
-# View recent Lambda logs (updated function name)
-aws logs tail /aws/lambda/rag-vector-indexing-poller --follow
-
-# Check OpenSearch collection status
-aws opensearchserverless describe-collection --collection-name $COLLECTION_NAME
+# Set home server URL
+aws ssm put-parameter \
+  --name "/rag/vector-storage/home-server-url" \
+  --value "https://your-domain.com" \
+  --type "String"
 ```
 
-This comprehensive architecture document provides a complete understanding of the Vector Storage Service's data flow, components, and operational characteristics. 
+### Verification
+```bash
+# Test proxy functionality
+curl -X POST https://your-api-gateway-url/search \
+  -H "Authorization: Bearer your-jwt-token" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "test", "limit": 5}'
+```
+
+## 🗺️ **Multi-Enver Roadmap**
+
+This service follows OndemandEnv's **multi-enver approach** with different architectural implementations:
+
+### **Current Implementation: `dev` Branch**
+- **Architecture**: Secure proxy to home vector server
+- **Cost**: $1-7/month (98% cost reduction)
+- **Use Case**: Cost optimization, full control, development environments
+- **Status**: ✅ **Production Ready**
+
+### **Planned Implementation: `dev-pine` Branch**
+- **Architecture**: Cloud-native Pinecone integration
+- **Components**:
+  - Direct Pinecone SDK integration
+  - Native vector operations (no proxy)
+  - Pinecone index management
+  - Usage-based scaling
+- **Cost**: $20-100/month (usage-based)
+- **Use Case**: Production scalability, managed service, enterprise features
+- **Status**: 📋 **Roadmap**
+
+### **Enver Comparison**
+
+| Aspect | `dev` (Home Server) | `dev-pine` (Pinecone) |
+|--------|-------------------|---------------------|
+| **Cost** | $1-7/month | $20-100/month |
+| **Control** | Full hardware control | Managed service |
+| **Scalability** | Manual scaling | Auto-scaling |
+| **Maintenance** | Self-managed | Vendor-managed |
+| **Performance** | Predictable | Variable (cloud) |
+| **Security** | Self-hosted | Vendor security |
+
+### **Contract Consistency**
+Both envers will satisfy the same service contracts, allowing consumers to switch between implementations without code changes.
+
+## 📚 **Related Documentation**
+
+- [Home Vector Server Setup](../home-vector-server/README.md)
+- [Hybrid RAG Architecture](../HYBRID_RAG_ARCHITECTURE.md)
+- [Knowledge Retrieval Service](../rag-knowledge-retrieval-service/ARCHITECTURE.md)
+- [Authentication Architecture](../rag-document-ingestion-service/AUTHENTICATION_ARCHITECTURE.md) 

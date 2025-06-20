@@ -1,48 +1,47 @@
 {
   "name": "@odmd-rag/vector-storage-service",
   "version": "1.0.0",
-  "description": "RAG Vector Storage Service - Stores embeddings in vector database for similarity search",
-  "main": "index.js",
+  "description": "RAG Vector Storage Service - API Gateway proxy to home vector server",
+  "main": "lib/rag-vector-storage-stack.js",
   "scripts": {
     "build": "tsc",
-    "clean": "tsc --build --clean",
     "watch": "tsc -w",
     "test": "jest",
-    "cdk": "cdk",
-    "cdk-ls": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk ls --profile odmd-rag-ws1",
-    "cdk-ls-deps": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk ls --show-dependencies --profile odmd-rag-ws1",
-    "cdk-synth": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk synth --all --profile odmd-rag-ws1",
-    "cdk-deploy": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk deploy ragVectorStorage--dev --no-rollback --profile odmd-rag-ws1"
+    "ragVectorStorage-cdk-ls": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk ls --profile odmd-rag-ws1",
+    "ragVectorStorage-cdk-ls-deps": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk ls --show-dependencies --profile odmd-rag-ws1",
+    "ragVectorStorage-cdk-synth": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk synth --all --profile odmd-rag-ws1",
+    "ragVectorStorage-cdk-deploy": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk deploy ragVectorStorage--dev --no-rollback --profile odmd-rag-ws1"
   },
   "keywords": [
+    "aws-cdk",
     "rag",
     "vector-storage",
-    "opensearch",
-    "aws",
-    "lambda",
-    "s3"
+    "ondemandenv",
+    "serverless",
+    "api-gateway",
+    "proxy"
   ],
-  "author": "ODMD RAG Team",
+  "author": "OnDemandEnv RAG Team",
   "license": "MIT",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.490.0",
-    "@aws-sdk/client-dynamodb": "^3.490.0",
-    "@aws-sdk/client-sqs": "^3.490.0",
-    "@aws-sdk/util-dynamodb": "^3.490.0",
-    "@opensearch-project/opensearch": "^2.4.0",
+    "@aws-sdk/client-dynamodb": "^3.830.0",
+    "@aws-sdk/client-s3": "^3.832.0",
+    "@aws-sdk/client-sqs": "^3.831.0",
+    "@aws-sdk/util-dynamodb": "^3.830.0",
     "aws-cdk-lib": "2.200.1",
-    "constructs": "^10.0.0"
+    "aws-lambda": "^1.0.7",
+    "constructs": "^10.3.0",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "@odmd-rag/contracts-lib-rag": "1.0.12",
-    "@types/aws-lambda": "^8.10.130",
-    "cross-env": "^7.0.3",
-    "@types/node": "20.10.5",
-    "typescript": "~5.3.3",
+    "@odmd-rag/contracts-lib-rag": "1.0.14",
+    "@types/aws-lambda": "^8.10.145",
+    "@types/jest": "^29.5.13",
+    "@types/node": "^22.5.4",
+    "@types/node-fetch": "^2.6.11",
     "jest": "^29.7.0",
-    "@types/jest": "^29.5.8",
-    "ts-jest": "^29.1.1",
-    "ts-node": "^10.9.1",
-    "source-map-support": "^0.5.21"
+    "cross-env": "^7.0.3",
+    "ts-jest": "^29.2.5",
+    "typescript": "~5.6.2"
   }
-} 
+}
