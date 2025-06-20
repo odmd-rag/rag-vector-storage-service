@@ -1,14 +1,14 @@
 import * as cdk from 'aws-cdk-lib';
-import { Construct } from 'constructs';
+import {Construct} from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
-import { HttpJwtAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
+import {HttpJwtAuthorizer} from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
-import { RagVectorStorageEnver } from '@odmd-rag/contracts-lib-rag';
+import {NodejsFunction} from 'aws-cdk-lib/aws-lambda-nodejs';
+import {RagVectorStorageEnver} from '@odmd-rag/contracts-lib-rag';
 
 export interface RagVectorStorageStackProps extends cdk.StackProps {
 }
@@ -17,13 +17,14 @@ export class RagVectorStorageStack extends cdk.Stack {
     constructor(scope: Construct, myEnver: RagVectorStorageEnver, props: RagVectorStorageStackProps) {
         const id = myEnver.getRevStackNames()[0];
         super(scope, id, props);
+        console.warn('save home server domain name like aaa.bbb.ccc to: ' + myEnver.homeServerDomain.producer.toSharePath())
 
         // Get authentication information from contracts (OnDemandEnv pattern)
         const clientId = myEnver.authProviderClientId.getSharedValue(this);
         const providerName = myEnver.authProviderName.getSharedValue(this);
 
         // Get home server URL from contracts (OnDemandEnv pattern)
-        const homeVectorServerUrl = myEnver.homeServerDomain.getSharedValue(this);
+        const homeVectorServerUrl = 'https://' + myEnver.homeServerDomain.getSharedValue(this);
 
         // Create Health Check Lambda
         const healthCheckLambda = new NodejsFunction(this, 'HealthCheck', {
@@ -45,7 +46,7 @@ export class RagVectorStorageStack extends cdk.Stack {
             description: 'Simple proxy API for vector storage operations',
             defaultAuthorizer: new HttpJwtAuthorizer('VectorStorageAuth',
                 `https://${providerName}`,
-                { jwtAudience: [clientId] }
+                {jwtAudience: [clientId]}
             ),
             corsPreflight: {
                 allowOrigins: ['*'], // Configure appropriately for production
