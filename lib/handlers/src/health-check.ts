@@ -14,7 +14,7 @@ interface HealthCheckResult {
 export const handler: Handler<ScheduledEvent | APIGatewayProxyEvent> = async (event) => {
     console.log('Health check triggered');
 
-    const homeVectorServerUrl = process.env.HOME_VECTOR_SERVER_URL!;
+    const homeServerDomain = process.env.HOME_SERVER_DOMAIN!;
     const startTime = Date.now();
 
     const healthResult: HealthCheckResult = {
@@ -28,10 +28,10 @@ export const handler: Handler<ScheduledEvent | APIGatewayProxyEvent> = async (ev
 
     try {
         // Test home server connectivity
-        console.log(`Testing connectivity to: ${homeVectorServerUrl}`);
+        console.log(`Testing connectivity to: ${homeServerDomain}`);
         
         const homeServerStart = Date.now();
-        const response = await fetch(`${homeVectorServerUrl}/health`, {
+        const response = await fetch(`${homeServerDomain}/health`, {
             method: 'GET',
             headers: {
                 'User-Agent': 'AWS-HealthCheck/1.0'

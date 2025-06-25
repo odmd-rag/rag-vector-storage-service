@@ -96,7 +96,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             functionName: `rag-vector-storage-health-check-${this.account}-${this.region}`,
             runtime: lambda.Runtime.NODEJS_22_X,
             handler: 'handler',
-            entry: __dirname + '/handlers/dist/health-check.js',
+            entry: __dirname + '/handlers/src/health-check.ts',
             timeout: cdk.Duration.seconds(30),
             memorySize: 256,
             logRetention: logs.RetentionDays.ONE_WEEK,
