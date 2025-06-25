@@ -36,7 +36,7 @@
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "@odmd-rag/contracts-lib-rag": "1.0.18",
+    "@odmd-rag/contracts-lib-rag": "1.0.19",
     "@types/aws-lambda": "^8.10.145",
     "@types/jest": "^29.5.13",
     "@types/node": "^22.5.4",
