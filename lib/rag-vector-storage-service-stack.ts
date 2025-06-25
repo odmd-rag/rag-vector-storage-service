@@ -32,7 +32,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
         // Domain setup
         const zoneName = props.zoneName;
         const hostedZoneId = props.hostedZoneId;
-        const apiSubdomain = 'vs-api.' + myEnver.targetRevision.value + '.' + myEnver.owner.buildId;
+        const apiSubdomain = ('vs-api.' + myEnver.targetRevision.value + '.' + myEnver.owner.buildId).toLowerCase();
         this.apiDomain = `${apiSubdomain}.${zoneName}`;
 
         // === CONSUMING from other services via OndemandEnv contracts ===
@@ -253,7 +253,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
                 [myEnver.vectorStorage.vectorIndexName, 'rag-documents'], // Default index name
                 [myEnver.vectorStorage.vectorMetadataBucket, vectorMetadataBucket.bucketName],
                 [myEnver.vectorStorage.vectorBackupBucket, vectorBackupBucket.bucketName],
-                
+
                 // Status API endpoint for WebUI tracking
                 [myEnver.statusApi.statusApiEndpoint, `https://${this.apiDomain}/status`],
             ])
