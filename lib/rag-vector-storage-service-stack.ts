@@ -14,26 +14,24 @@ import {ApiGatewayv2DomainProperties} from "aws-cdk-lib/aws-route53-targets";
 import {NodejsFunction} from 'aws-cdk-lib/aws-lambda-nodejs';
 import {RagVectorStorageEnver} from '@odmd-rag/contracts-lib-rag';
 import {OdmdShareOut} from '@ondemandenv/contracts-lib-base';
+import {StackProps} from "aws-cdk-lib";
+import {EmbeddingStorageProducer} from "@odmd-rag/contracts-lib-rag/dist/services/embedding";
 
-export interface RagVectorStorageServiceStackProps extends cdk.StackProps {
-    zoneName: string;
-    hostedZoneId: string;
-    webUiDomain: string;
-}
 
 export class RagVectorStorageServiceStack extends cdk.Stack {
     readonly httpApi: apigatewayv2.HttpApi;
     readonly apiDomain: string;
+    readonly zoneName: string;
+    readonly hostedZoneId: string;
 
-    constructor(scope: Construct, myEnver: RagVectorStorageEnver, props: RagVectorStorageServiceStackProps) {
+    constructor(scope: Construct, myEnver: RagVectorStorageEnver, props: StackProps) {
         const id = myEnver.getRevStackNames()[0];
-        super(scope, id, {...props, crossRegionReferences: props.env!.region !== 'us-east-1'});
+        super(scope, id, props);
+        this.hostedZoneId = 'Z01450892FNOJJT5BBBRU';
+        this.zoneName = 'rag-ws1.root.ondemandenv.link';
 
-        // Domain setup
-        const zoneName = props.zoneName;
-        const hostedZoneId = props.hostedZoneId;
         const apiSubdomain = ('vs-api.' + myEnver.targetRevision.value + '.' + myEnver.owner.buildId).toLowerCase();
-        this.apiDomain = `${apiSubdomain}.${zoneName}`;
+        this.apiDomain = `${apiSubdomain}.${this.zoneName}`;
 
         // === CONSUMING from other services via OndemandEnv contracts ===
         const embeddingsBucketName = myEnver.embeddingSubscription.getSharedValue(this);
@@ -133,11 +131,12 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             })
         }));
 
-        // === HTTP API FOR STATUS TRACKING ===
+        const ingestionEnver = (myEnver.embeddingSubscription.producer as EmbeddingStorageProducer).owner.processedContentSubscription.producer.owner.ingestionEnver
 
         // CORS configuration
         const allowedOrigins = ['http://localhost:5173'];
-        allowedOrigins.push(`https://${props.webUiDomain}`);
+        const webUiDomain = `https://up.${ingestionEnver.targetRevision.value}.${ingestionEnver.owner.buildId}.${this.zoneName}`.toLowerCase();
+        allowedOrigins.push(`https://${webUiDomain}`);
 
         // HTTP API Gateway with JWT authentication
         this.httpApi = new apigatewayv2.HttpApi(this, 'VecApi', {
@@ -190,8 +189,8 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
 
         // Set up custom domain for API Gateway
         const hostedZone = HostedZone.fromHostedZoneAttributes(this, 'VecApiHostedZone', {
-            hostedZoneId: hostedZoneId,
-            zoneName: zoneName,
+            hostedZoneId: this.hostedZoneId,
+            zoneName: this.zoneName,
         });
 
         const domainName = new apigatewayv2.DomainName(this, 'VecApiDomainName', {
