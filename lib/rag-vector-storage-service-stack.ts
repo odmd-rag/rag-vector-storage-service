@@ -1,130 +1,262 @@
 import * as cdk from 'aws-cdk-lib';
 import {Construct} from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import {HttpJwtAuthorizer} from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
-import * as iam from 'aws-cdk-lib/aws-iam';
+import {Certificate, CertificateValidation} from "aws-cdk-lib/aws-certificatemanager";
+import {ARecord, HostedZone, RecordTarget} from "aws-cdk-lib/aws-route53";
+import {ApiGatewayv2DomainProperties} from "aws-cdk-lib/aws-route53-targets";
 import {NodejsFunction} from 'aws-cdk-lib/aws-lambda-nodejs';
 import {RagVectorStorageEnver} from '@odmd-rag/contracts-lib-rag';
+import {OdmdShareOut} from '@ondemandenv/contracts-lib-base';
 
-export interface RagVectorStorageStackProps extends cdk.StackProps {
+export interface RagVectorStorageServiceStackProps extends cdk.StackProps {
+    zoneName: string;
+    hostedZoneId: string;
+    webUiDomain: string;
 }
 
-export class RagVectorStorageStack extends cdk.Stack {
-    constructor(scope: Construct, myEnver: RagVectorStorageEnver, props: RagVectorStorageStackProps) {
-        const id = myEnver.getRevStackNames()[0];
-        super(scope, id, props);
-        console.warn('save home server domain name like aaa.bbb.ccc to: ' + myEnver.homeServerDomain.producer.toSharePath())
+export class RagVectorStorageServiceStack extends cdk.Stack {
+    readonly httpApi: apigatewayv2.HttpApi;
+    readonly apiDomain: string;
 
-        // Get authentication information from contracts (OnDemandEnv pattern)
+    constructor(scope: Construct, myEnver: RagVectorStorageEnver, props: RagVectorStorageServiceStackProps) {
+        const id = myEnver.getRevStackNames()[0];
+        super(scope, id, {...props, crossRegionReferences: props.env!.region !== 'us-east-1'});
+
+        // Domain setup
+        const zoneName = props.zoneName;
+        const hostedZoneId = props.hostedZoneId;
+        const apiSubdomain = 'vs-api.' + myEnver.targetRevision.value + '.' + myEnver.owner.buildId;
+        this.apiDomain = `${apiSubdomain}.${zoneName}`;
+
+        // === CONSUMING from other services via OndemandEnv contracts ===
+        const embeddingsBucketName = myEnver.embeddingSubscription.getSharedValue(this);
+        const homeServerDomain = myEnver.homeServerDomain.getSharedValue(this);
         const clientId = myEnver.authProviderClientId.getSharedValue(this);
         const providerName = myEnver.authProviderName.getSharedValue(this);
 
-        // Get home server URL from contracts (OnDemandEnv pattern)
-        const homeVectorServerUrl = 'https://' + myEnver.homeServerDomain.getSharedValue(this);
+        // === S3 BUCKETS FOR VECTOR STORAGE STATUS ===
 
-        // Create Health Check Lambda
-        const healthCheckLambda = new NodejsFunction(this, 'HealthCheck', {
-            functionName: `rag-vector-health-${this.account}-${this.region}`,
-            runtime: lambda.Runtime.NODEJS_18_X,
-            handler: 'handler',
-            entry: 'lib/handlers/src/health-check.ts',
-            timeout: cdk.Duration.seconds(30),
-            memorySize: 128,
-            environment: {
-                HOME_VECTOR_SERVER_URL: homeVectorServerUrl,
-            },
-            description: 'Health check for home vector server connectivity',
+        const vectorMetadataBucket = new s3.Bucket(this, 'VecMetadataBucket', {
+            bucketName: `rag-vector-metadata-${this.account}-${this.region}`,
+            versioned: false,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+            autoDeleteObjects: true,
+            lifecycleRules: [{
+                id: 'DeleteOldVectorMetadata',
+                enabled: true,
+                expiration: cdk.Duration.days(365), // Keep vector metadata for a year
+            }],
+            publicReadAccess: false,
+            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
         });
 
-        // Create HTTP API Gateway with JWT Authorization (OnDemandEnv pattern)
-        const httpApi = new apigatewayv2.HttpApi(this, 'VectorStorageApi', {
+        const vectorBackupBucket = new s3.Bucket(this, 'VecBackupBucket', {
+            bucketName: `rag-vector-backup-${this.account}-${this.region}`,
+            versioned: true,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+            autoDeleteObjects: true,
+            lifecycleRules: [{
+                id: 'DeleteOldVectorBackups',
+                enabled: true,
+                expiration: cdk.Duration.days(30), // Keep backups for 30 days
+            }],
+            publicReadAccess: false,
+            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        });
+
+        // === LAMBDA FUNCTIONS ===
+
+        // Status handler Lambda for WebUI tracking
+        const statusHandler = new NodejsFunction(this, 'VecStatusHandler', {
+            functionName: `rag-vector-storage-status-${this.account}-${this.region}`,
+            entry: __dirname + '/handlers/src/status-handler.ts',
+            runtime: lambda.Runtime.NODEJS_22_X,
+            handler: 'handler',
+            timeout: cdk.Duration.seconds(30),
+            memorySize: 256,
+            logRetention: logs.RetentionDays.ONE_WEEK,
+            environment: {
+                HOME_SERVER_DOMAIN: homeServerDomain,
+                VECTOR_METADATA_BUCKET: vectorMetadataBucket.bucketName,
+                EMBEDDINGS_BUCKET_NAME: embeddingsBucketName,
+                CLIENT_ID: clientId,
+                PROVIDER_NAME: providerName,
+            },
+        });
+
+        // Health check Lambda for monitoring home server
+        const healthCheckHandler = new NodejsFunction(this, 'VecHealthCheckHandler', {
+            functionName: `rag-vector-storage-health-check-${this.account}-${this.region}`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            handler: 'handler',
+            entry: __dirname + '/handlers/dist/health-check.js',
+            timeout: cdk.Duration.seconds(30),
+            memorySize: 256,
+            logRetention: logs.RetentionDays.ONE_WEEK,
+            environment: {
+                HOME_SERVER_DOMAIN: homeServerDomain,
+                VECTOR_METADATA_BUCKET: vectorMetadataBucket.bucketName,
+            },
+        });
+
+        // === PERMISSIONS ===
+
+        // Grant S3 permissions
+        const embeddingsBucket = s3.Bucket.fromBucketName(this, 'VecEmbeddingsBucket', embeddingsBucketName);
+        embeddingsBucket.grantRead(statusHandler);
+
+        vectorMetadataBucket.grantRead(statusHandler);
+        vectorMetadataBucket.grantReadWrite(healthCheckHandler);
+
+        // === SCHEDULED MONITORING ===
+
+        // EventBridge rule for health checks
+        const healthCheckRule = new events.Rule(this, 'VecHealthCheckRule', {
+            schedule: events.Schedule.rate(cdk.Duration.minutes(10)), // Health check every 10 minutes
+            description: 'Triggers health checks for home vector server',
+        });
+
+        healthCheckRule.addTarget(new targets.LambdaFunction(healthCheckHandler, {
+            event: events.RuleTargetInput.fromObject({
+                source: 'scheduled-health-check',
+                detail: {
+                    action: 'health-check',
+                    homeServerDomain: homeServerDomain,
+                }
+            })
+        }));
+
+        // === HTTP API FOR STATUS TRACKING ===
+
+        // CORS configuration
+        const allowedOrigins = ['http://localhost:5173'];
+        allowedOrigins.push(`https://${props.webUiDomain}`);
+
+        // HTTP API Gateway with JWT authentication
+        this.httpApi = new apigatewayv2.HttpApi(this, 'VecApi', {
             apiName: 'RAG Vector Storage Service',
-            description: 'Simple proxy API for vector storage operations',
-            defaultAuthorizer: new HttpJwtAuthorizer('VectorStorageAuth',
+            description: 'HTTP API for RAG vector storage service status with JWT authentication',
+            defaultAuthorizer: new HttpJwtAuthorizer('Auth',
                 `https://${providerName}`,
                 {jwtAudience: [clientId]}
             ),
             corsPreflight: {
-                allowOrigins: ['*'], // Configure appropriately for production
-                allowMethods: [
-                    apigatewayv2.CorsHttpMethod.GET,
-                    apigatewayv2.CorsHttpMethod.POST,
-                    apigatewayv2.CorsHttpMethod.DELETE,
-                    apigatewayv2.CorsHttpMethod.OPTIONS
+                allowOrigins: allowedOrigins,
+                allowMethods: [apigatewayv2.CorsHttpMethod.GET, apigatewayv2.CorsHttpMethod.POST, apigatewayv2.CorsHttpMethod.OPTIONS],
+                allowHeaders: [
+                    'Content-Type',
+                    'X-Amz-Date',
+                    'Authorization',
+                    'X-Api-Key',
+                    'X-Amz-Security-Token',
+                    'X-Amz-User-Agent',
+                    'Host',
+                    'Cache-Control',
+                    'Pragma'
                 ],
-                allowHeaders: ['Content-Type', 'Authorization'],
+                allowCredentials: false,
+                exposeHeaders: ['Date', 'X-Amzn-ErrorType'],
+                maxAge: cdk.Duration.hours(1),
             },
         });
 
-        // Create direct HTTP integration for vector operations
-        const directHttpIntegration = new apigatewayv2Integrations.HttpUrlIntegration(
-            'DirectVectorIntegration',
-            `${homeVectorServerUrl}/{proxy}`,
-            {
-                method: apigatewayv2.HttpMethod.ANY,
-                parameterMapping: new apigatewayv2.ParameterMapping()
-                    .appendHeader('authorization', apigatewayv2.MappingValue.requestHeader('authorization'))
-                    .overwritePath(apigatewayv2.MappingValue.requestPath())
-            }
-        );
-
-        const healthIntegration = new apigatewayv2Integrations.HttpLambdaIntegration(
-            'HealthCheckIntegration',
-            healthCheckLambda
-        );
-
-        // Define API routes - using {proxy+} for direct forwarding to home server
-        httpApi.addRoutes({
-            path: '/{proxy+}',
-            methods: [apigatewayv2.HttpMethod.ANY],
-            integration: directHttpIntegration,
+        // Status endpoint
+        this.httpApi.addRoutes({
+            path: '/status/{documentId}',
+            methods: [apigatewayv2.HttpMethod.GET],
+            integration: new apigatewayv2Integrations.HttpLambdaIntegration('VecStatusIntegration', statusHandler),
         });
 
-        // Health endpoint (no auth required)
-        httpApi.addRoutes({
+        // Vector search proxy endpoint - TODO: Add when handler is implemented
+        // this.httpApi.addRoutes({
+        //     path: '/search',
+        //     methods: [apigatewayv2.HttpMethod.POST],
+        //     integration: new apigatewayv2Integrations.HttpLambdaIntegration('VecSearchIntegration', vectorStorageProxyHandler),
+        // });
+
+        // Health check endpoint
+        this.httpApi.addRoutes({
             path: '/health',
             methods: [apigatewayv2.HttpMethod.GET],
-            integration: healthIntegration,
-            authorizer: new apigatewayv2.HttpNoneAuthorizer(),
+            integration: new apigatewayv2Integrations.HttpLambdaIntegration('VecHealthIntegration', healthCheckHandler),
         });
 
-        // Schedule health checks every 5 minutes
-        const healthCheckRule = new events.Rule(this, 'HealthCheckSchedule', {
-            schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
-            description: 'Scheduled health check for vector storage service',
+        // Set up custom domain for API Gateway
+        const hostedZone = HostedZone.fromHostedZoneAttributes(this, 'VecApiHostedZone', {
+            hostedZoneId: hostedZoneId,
+            zoneName: zoneName,
         });
 
-        healthCheckRule.addTarget(new targets.LambdaFunction(healthCheckLambda));
-
-        // Grant Lambda permissions for EventBridge
-        healthCheckLambda.addPermission('AllowEventBridgeInvoke', {
-            principal: new iam.ServicePrincipal('events.amazonaws.com'),
-            sourceArn: healthCheckRule.ruleArn,
+        const domainName = new apigatewayv2.DomainName(this, 'VecApiDomainName', {
+            domainName: this.apiDomain,
+            certificate: new Certificate(this, 'VecApiCertificate', {
+                domainName: this.apiDomain,
+                validation: CertificateValidation.fromDns(hostedZone),
+            }),
         });
 
-        // Outputs
-        new cdk.CfnOutput(this, 'VectorStorageApiUrl', {
-            value: httpApi.url!,
-            description: 'Vector Storage Service API URL',
+        new apigatewayv2.ApiMapping(this, 'VecApiMapping', {
+            api: this.httpApi,
+            domainName: domainName,
         });
 
-        new cdk.CfnOutput(this, 'HealthCheckEndpoint', {
-            value: `${httpApi.url}health`,
-            description: 'Health check endpoint',
+        new ARecord(this, 'VecApiAliasRecord', {
+            zone: hostedZone,
+            target: RecordTarget.fromAlias(
+                new ApiGatewayv2DomainProperties(
+                    domainName.regionalDomainName,
+                    domainName.regionalHostedZoneId
+                )
+            ),
+            recordName: apiSubdomain,
         });
 
-        new cdk.CfnOutput(this, 'HomeVectorServerUrl', {
-            value: homeVectorServerUrl,
-            description: 'Home Vector Server URL (direct integration)',
+        // === OUTPUTS ===
+
+        new cdk.CfnOutput(this, 'VecMetadataBucketName', {
+            value: vectorMetadataBucket.bucketName,
+            exportName: `${this.stackName}-VecMetadataBucket`,
         });
 
-        new cdk.CfnOutput(this, 'HealthCheckLambdaName', {
-            value: healthCheckLambda.functionName,
-            description: 'Health Check Lambda function name',
+        new cdk.CfnOutput(this, 'VecBackupBucketName', {
+            value: vectorBackupBucket.bucketName,
+            exportName: `${this.stackName}-VecBackupBucket`,
         });
+
+        new cdk.CfnOutput(this, 'VecApiEndpoint', {
+            value: `https://${this.apiDomain}`,
+            exportName: `${this.stackName}-VecApiEndpoint`,
+        });
+
+        new cdk.CfnOutput(this, 'VecApiDomain', {
+            value: this.apiDomain,
+            exportName: `${this.stackName}-VecApiDomain`,
+        });
+
+        new cdk.CfnOutput(this, 'VecHomeServerDomain', {
+            value: homeServerDomain,
+            exportName: `${this.stackName}-VecHomeServerDomain`,
+        });
+
+        // OndemandEnv Producers - Share values with other services
+        new OdmdShareOut(
+            this, new Map([
+                // Vector database resources
+                [myEnver.vectorStorage.vectorDatabaseEndpoint, homeServerDomain],
+                [myEnver.vectorStorage.vectorIndexName, 'rag-documents'], // Default index name
+                [myEnver.vectorStorage.vectorMetadataBucket, vectorMetadataBucket.bucketName],
+                [myEnver.vectorStorage.vectorBackupBucket, vectorBackupBucket.bucketName],
+                
+                // Status API endpoint for WebUI tracking
+                [myEnver.statusApi.statusApiEndpoint, `https://${this.apiDomain}/status`],
+            ])
+        );
     }
 } 

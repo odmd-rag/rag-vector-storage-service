@@ -2,7 +2,7 @@
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { StackProps } from 'aws-cdk-lib';
-import { RagVectorStorageStack } from '../lib/rag-vector-storage-service-stack';
+import { RagVectorStorageServiceStack, RagVectorStorageServiceStackProps } from '../lib/rag-vector-storage-service-stack';
 import { RagContracts, RagVectorStorageEnver } from '@odmd-rag/contracts-lib-rag';
 
 const app = new cdk.App({autoSynth: false});
@@ -18,15 +18,18 @@ async function main() {
         env: {
             account: buildAccount,
             region: buildRegion
-        }
-    } as StackProps;
+        },
+        zoneName: 'rag-ws1.root.ondemandenv.link',
+        hostedZoneId: 'Z01450892FNOJJT5BBBRU',
+        webUiDomain: 'example.com' // This will be overridden by contracts
+    } as RagVectorStorageServiceStackProps;
 
     new RagContracts(app);
 
     const targetEnver = RagContracts.inst.getTargetEnver() as RagVectorStorageEnver;
 
     // Create the main vector storage stack using OnDemandEnv pattern
-    const mainStack = new RagVectorStorageStack(app, targetEnver, props);
+    const mainStack = new RagVectorStorageServiceStack(app, targetEnver, props);
 
     app.synth();
 }

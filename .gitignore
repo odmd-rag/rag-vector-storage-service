@@ -7,15 +7,23 @@ yarn-error.log*
 # Build outputs
 dist/
 build/
-lib/
+lib/*.js
+lib/*.js.map
+lib/*.d.ts
 *.tsbuildinfo
 
-# TypeScript
-*.js
-*.js.map
-*.d.ts
+# TypeScript build outputs (not source files)
+# Only ignore compiled JS/maps in specific build directories
+/lib/**/*.js
+/lib/**/*.js.map
+/lib/**/*.d.ts
+/dist/**/*.js
+/dist/**/*.js.map
+/dist/**/*.d.ts
+# Keep source JS files and CDK config files
 !jest.config.js
 !*.config.js
+!cdk.json
 
 # CDK
 cdk.out/

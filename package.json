@@ -4,13 +4,15 @@
   "description": "RAG Vector Storage Service - API Gateway proxy to home vector server",
   "main": "lib/rag-vector-storage-stack.js",
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build:handlers && tsc",
+    "build:handlers": "cd lib/handlers && npm install && npm run build",
+    "clean": "npm run clean:handlers && rm -rf dist",
+    "clean:handlers": "cd lib/handlers && npm run clean",
     "watch": "tsc -w",
     "test": "jest",
-    "ragVectorStorage-cdk-ls": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk ls --profile odmd-rag-ws1",
-    "ragVectorStorage-cdk-ls-deps": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk ls --show-dependencies --profile odmd-rag-ws1",
-    "ragVectorStorage-cdk-synth": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk synth --all --profile odmd-rag-ws1",
-    "ragVectorStorage-cdk-deploy": "tsc --build && cross-env ODMD_build_id=ragVectorStorage ODMD_rev_ref=b..dev cdk deploy ragVectorStorage--dev --no-rollback --profile odmd-rag-ws1"
+    "ragStore-cdk-ls": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --profile odmd-rag-ws1",
+    "ragStore-cdk-ls-deps": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --show-dependencies --profile odmd-rag-ws1",
+    "ragStore-cdk-synth": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk synth --all --profile odmd-rag-ws1"
   },
   "keywords": [
     "aws-cdk",
@@ -34,7 +36,7 @@
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "@odmd-rag/contracts-lib-rag": "1.0.14",
+    "@odmd-rag/contracts-lib-rag": "1.0.18",
     "@types/aws-lambda": "^8.10.145",
     "@types/jest": "^29.5.13",
     "@types/node": "^22.5.4",
