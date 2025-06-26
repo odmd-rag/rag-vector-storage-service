@@ -5,6 +5,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import {HttpJwtAuthorizer} from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
@@ -104,14 +105,46 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             },
         });
 
+        // === CHECKPOINT TABLE FOR S3 POLLING ===
+        
+        const checkpointTable = new dynamodb.Table(this, 'VecCheckpointTable', {
+            tableName: `rag-vector-checkpoint-${this.account}-${this.region}`,
+            partitionKey: { name: 'serviceId', type: dynamodb.AttributeType.STRING },
+            billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+            pointInTimeRecovery: false,
+        });
+
+        // S3 poller Lambda for processing embeddings
+        const s3PollerHandler = new NodejsFunction(this, 'VecS3PollerHandler', {
+            functionName: `rag-vector-storage-s3-poller-${this.account}-${this.region}`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            handler: 'handler',
+            entry: __dirname + '/handlers/src/vector-s3-poller.ts',
+            timeout: cdk.Duration.minutes(5),
+            memorySize: 512,
+            logRetention: logs.RetentionDays.ONE_WEEK,
+            environment: {
+                EMBEDDINGS_BUCKET_NAME: embeddingsBucketName,
+                CHECKPOINT_TABLE_NAME: checkpointTable.tableName,
+                HOME_SERVER_DOMAIN: homeServerDomain,
+                VECTOR_METADATA_BUCKET: vectorMetadataBucket.bucketName,
+            },
+        });
+
         // === PERMISSIONS ===
 
         // Grant S3 permissions
         const embeddingsBucket = s3.Bucket.fromBucketName(this, 'VecEmbeddingsBucket', embeddingsBucketName);
         embeddingsBucket.grantRead(statusHandler);
+        embeddingsBucket.grantRead(s3PollerHandler);
 
         vectorMetadataBucket.grantRead(statusHandler);
         vectorMetadataBucket.grantReadWrite(healthCheckHandler);
+        vectorMetadataBucket.grantReadWrite(s3PollerHandler);
+
+        // Grant DynamoDB permissions for checkpoint management
+        checkpointTable.grantReadWriteData(s3PollerHandler);
 
         // === SCHEDULED MONITORING ===
 
@@ -127,6 +160,22 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
                 detail: {
                     action: 'health-check',
                     homeServerDomain: homeServerDomain,
+                }
+            })
+        }));
+
+        // EventBridge rule for S3 polling (every 2 minutes)
+        const s3PollingRule = new events.Rule(this, 'VecS3PollingRule', {
+            schedule: events.Schedule.rate(cdk.Duration.minutes(2)),
+            description: 'Triggers S3 polling for new embeddings to process',
+        });
+
+        s3PollingRule.addTarget(new targets.LambdaFunction(s3PollerHandler, {
+            event: events.RuleTargetInput.fromObject({
+                source: 'scheduled-polling',
+                detail: {
+                    action: 'poll-s3-bucket',
+                    bucketName: embeddingsBucketName,
                 }
             })
         }));
