@@ -92,8 +92,8 @@ async function getDocumentVectorStorageStatus(documentId: string, requestId: str
     const startTime = Date.now();
     
     try {
-        // Check if vectors have been processed (exists in vector metadata bucket)
-        // The S3 poller stores metadata with format: {documentId}-vector-metadata.json
+        // Check if we have vector metadata for this document
+        // The vector processor stores metadata with format: {documentId}-vector-metadata.json
         const vectorMetadataKey = `${documentId}-vector-metadata.json`;
         const vectorMetadataExists = await checkS3ObjectExists(VECTOR_METADATA_BUCKET, vectorMetadataKey, requestId);
         
@@ -202,7 +202,7 @@ async function getVectorProcessingMetadata(documentId: string, requestId: string
         
         const response = await s3Client.send(command);
         
-        // Return metadata that matches what the S3 poller stores
+        // Return metadata that matches what the vector processor stores
         const metadata = {
             documentId,
             status: response.Metadata?.['status'] || 'completed',

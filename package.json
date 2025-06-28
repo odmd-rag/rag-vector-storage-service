@@ -10,9 +10,9 @@
     "clean:handlers": "cd lib/handlers && npm run clean",
     "watch": "tsc -w",
     "test": "jest",
-    "ragStore-cdk-ls": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --profile odmd-rag-ws1",
-    "ragStore-cdk-ls-deps": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --show-dependencies --profile odmd-rag-ws1",
-    "ragStore-cdk-synth": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk synth --all --profile odmd-rag-ws1"
+    "ragStore-cdk-ls": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --profile default",
+    "ragStore-cdk-ls-deps": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --show-dependencies --profile default",
+    "ragStore-cdk-synth": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk synth --all --profile default"
   },
   "keywords": [
     "aws-cdk",
@@ -36,7 +36,7 @@
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "@odmd-rag/contracts-lib-rag": "1.0.19",
+    "@odmd-rag/contracts-lib-rag": "1.0.20",
     "@types/aws-lambda": "^8.10.145",
     "@types/jest": "^29.5.13",
     "@types/node": "^22.5.4",

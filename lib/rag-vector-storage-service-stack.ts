@@ -3,9 +3,11 @@ import {Construct} from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
-import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import {HttpJwtAuthorizer} from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
@@ -105,29 +107,57 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             },
         });
 
-        // === CHECKPOINT TABLE FOR S3 POLLING ===
+        // ❌ REMOVED: Checkpoint table (no longer needed for event-driven architecture)
+
         
-        const checkpointTable = new dynamodb.Table(this, 'VecCheckpointTable', {
-            tableName: `rag-vector-checkpoint-${this.account}-${this.region}`,
-            partitionKey: { name: 'serviceId', type: dynamodb.AttributeType.STRING },
-            billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-            removalPolicy: cdk.RemovalPolicy.DESTROY,
-            pointInTimeRecovery: false,
+        // === PERSISTENT SQS QUEUES (Won't be auto-deleted) ===
+        
+        const vectorProcessingDlq = new sqs.Queue(this, 'VecProcessingDlq', {
+            queueName: `rag-vector-processing-dlq-${this.account}-${this.region}`,
+            retentionPeriod: cdk.Duration.days(14),
+            removalPolicy: cdk.RemovalPolicy.RETAIN,          // Prevent auto-deletion
         });
 
-        // S3 poller Lambda for processing embeddings
-        const s3PollerHandler = new NodejsFunction(this, 'VecS3PollerHandler', {
-            functionName: `rag-vector-storage-s3-poller-${this.account}-${this.region}`,
+        const vectorProcessingQueue = new sqs.Queue(this, 'VecProcessingQueue', {
+            queueName: `rag-vector-processing-queue-${this.account}-${this.region}`,
+            
+            // Optimized for dynamic batching
+            visibilityTimeout: cdk.Duration.minutes(10),      // Vector processing timeout
+            receiveMessageWaitTime: cdk.Duration.seconds(20), // Long polling
+            retentionPeriod: cdk.Duration.days(14),           // Message durability
+            removalPolicy: cdk.RemovalPolicy.RETAIN,          // Prevent auto-deletion
+            
+            deadLetterQueue: {
+                queue: vectorProcessingDlq,
+                maxReceiveCount: 3
+            }
+        });
+
+        // Vector processing Lambda (processes embeddings from SQS)
+        const vectorProcessorHandler = new NodejsFunction(this, 'VecProcessorHandler', {
+            functionName: `rag-vector-processor-${this.account}-${this.region}`,
             runtime: lambda.Runtime.NODEJS_22_X,
             handler: 'handler',
-            entry: __dirname + '/handlers/src/vector-s3-poller.ts',
-            timeout: cdk.Duration.minutes(5),
-            memorySize: 512,
+            entry: __dirname + '/handlers/src/vector-processor.ts',
+            timeout: cdk.Duration.minutes(3),                  // Reduced for batch processing
+            memorySize: 1024,                                  // Optimized for batching
             logRetention: logs.RetentionDays.ONE_WEEK,
             environment: {
-                EMBEDDINGS_BUCKET_NAME: embeddingsBucketName,
-                CHECKPOINT_TABLE_NAME: checkpointTable.tableName,
                 HOME_SERVER_DOMAIN: homeServerDomain,
+                VECTOR_METADATA_BUCKET: vectorMetadataBucket.bucketName,
+            },
+        });
+
+        // DLQ handler Lambda (processes failed vector processing messages)
+        const vectorDlqHandler = new NodejsFunction(this, 'VecDlqHandler', {
+            functionName: `rag-vector-dlq-handler-${this.account}-${this.region}`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            handler: 'handler',
+            entry: __dirname + '/handlers/src/dlq-handler.ts',
+            timeout: cdk.Duration.seconds(30),
+            memorySize: 256,
+            logRetention: logs.RetentionDays.ONE_WEEK,
+            environment: {
                 VECTOR_METADATA_BUCKET: vectorMetadataBucket.bucketName,
             },
         });
@@ -137,14 +167,45 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
         // Grant S3 permissions
         const embeddingsBucket = s3.Bucket.fromBucketName(this, 'VecEmbeddingsBucket', embeddingsBucketName);
         embeddingsBucket.grantRead(statusHandler);
-        embeddingsBucket.grantRead(s3PollerHandler);
+        embeddingsBucket.grantRead(vectorProcessorHandler);
 
         vectorMetadataBucket.grantRead(statusHandler);
         vectorMetadataBucket.grantReadWrite(healthCheckHandler);
-        vectorMetadataBucket.grantReadWrite(s3PollerHandler);
+        vectorMetadataBucket.grantReadWrite(vectorProcessorHandler);
 
-        // Grant DynamoDB permissions for checkpoint management
-        checkpointTable.grantReadWriteData(s3PollerHandler);
+        // === NEW: S3 → SQS EVENT NOTIFICATIONS FOR EMBEDDINGS ===
+        
+        // Immediate notification when embeddings are created
+        embeddingsBucket.addEventNotification(
+            s3.EventType.OBJECT_CREATED,
+            new s3n.SqsDestination(vectorProcessingQueue),
+            { 
+                prefix: 'embeddings/',
+                suffix: '.json'
+            }
+        );
+
+        // === SQS EVENT SOURCES WITH DYNAMIC BATCHING ===
+
+        // Vector processing with dynamic batching
+        vectorProcessorHandler.addEventSource(new lambdaEventSources.SqsEventSource(vectorProcessingQueue, {
+            batchSize: 1000,
+            maxBatchingWindow: cdk.Duration.seconds(5),
+            maxConcurrency: 8,
+            reportBatchItemFailures: true,
+        }));
+
+        // DLQ processing
+        vectorDlqHandler.addEventSource(new lambdaEventSources.SqsEventSource(vectorProcessingDlq, {
+            batchSize: 100,
+            maxBatchingWindow: cdk.Duration.seconds(20),
+            maxConcurrency: 8,
+            reportBatchItemFailures: true,
+        }));
+
+        // Grant DLQ permissions
+        vectorProcessingDlq.grantConsumeMessages(vectorDlqHandler);
+        vectorMetadataBucket.grantReadWrite(vectorDlqHandler);
 
         // === SCHEDULED MONITORING ===
 
@@ -164,21 +225,6 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             })
         }));
 
-        // EventBridge rule for S3 polling (every 2 minutes)
-        const s3PollingRule = new events.Rule(this, 'VecS3PollingRule', {
-            schedule: events.Schedule.rate(cdk.Duration.minutes(2)),
-            description: 'Triggers S3 polling for new embeddings to process',
-        });
-
-        s3PollingRule.addTarget(new targets.LambdaFunction(s3PollerHandler, {
-            event: events.RuleTargetInput.fromObject({
-                source: 'scheduled-polling',
-                detail: {
-                    action: 'poll-s3-bucket',
-                    bucketName: embeddingsBucketName,
-                }
-            })
-        }));
 
         const ingestionEnver = (myEnver.embeddingSubscription.producer as EmbeddingStorageProducer).owner.processedContentSubscription.producer.owner.ingestionEnver
 
@@ -291,6 +337,11 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'VecHomeServerDomain', {
             value: homeServerDomain,
             exportName: `${this.stackName}-VecHomeServerDomain`,
+        });
+
+        new cdk.CfnOutput(this, 'VecProcessingQueueUrl', {
+            value: vectorProcessingQueue.queueUrl,
+            description: 'SQS queue for vector processing tasks (event-driven)',
         });
 
         // OndemandEnv Producers - Share values with other services
