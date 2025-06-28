@@ -1,30 +1,10 @@
-import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure } from 'aws-lambda';
+import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure, S3Event } from 'aws-lambda';
 import { S3Client, GetObjectCommand, PutObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
 
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'us-east-2' });
 
 const VECTOR_INDEX_BUCKET = process.env.VECTOR_INDEX_BUCKET!;
-
-interface S3EventRecord {
-    eventVersion: string;
-    eventSource: string;
-    eventTime: string;
-    eventName: string;
-    s3: {
-        s3SchemaVersion: string;
-        configurationId?: string;
-        bucket: {
-            name: string;
-            arn: string;
-        };
-        object: {
-            key: string;
-            size: number;
-            eTag: string;
-        };
-    };
-}
 
 interface EmbeddingResult {
     documentId: string;
@@ -144,74 +124,80 @@ async function processVectorTask(record: SQSRecord, requestId: string): Promise<
     
     try {
         console.log(`[${requestId}] 🔍 Step 1: Parsing S3 event from SQS message...`);
-        const s3Event: S3EventRecord = JSON.parse(record.body);
-        
-        console.log(`[${requestId}] ✅ Step 1 PASSED: S3 event parsed successfully`);
-        console.log(`[${requestId}] 📋 S3 event details:`);
-        console.log(`[${requestId}]   Event: ${s3Event.eventName}`);
-        console.log(`[${requestId}]   Bucket: ${s3Event.s3.bucket.name}`);
-        console.log(`[${requestId}]   Object key: ${s3Event.s3.object.key}`);
-        console.log(`[${requestId}]   Object size: ${s3Event.s3.object.size} bytes`);
-        console.log(`[${requestId}]   Event time: ${s3Event.eventTime}`);
+        const s3Event: S3Event = JSON.parse(record.body);
 
-        const keyParts = s3Event.s3.object.key.split('/');
-        if (keyParts.length !== 3 || keyParts[0] !== 'embeddings') {
-            throw new Error(`Invalid S3 key format: ${s3Event.s3.object.key}. Expected: embeddings/documentId/chunkId.json`);
+        for (const s3Record of s3Event.Records) {
+            const bucketName = s3Record.s3.bucket.name;
+            const objectKey = decodeURIComponent(s3Record.s3.object.key.replace(/\+/g, ' '));
+            
+            console.log(`[${requestId}] 📋 S3 event details:`);
+            console.log(`[${requestId}]   Event: ${s3Record.eventName}`);
+            console.log(`[${requestId}]   Bucket: ${bucketName}`);
+            console.log(`[${requestId}]   Object key: ${objectKey}`);
+            console.log(`[${requestId}]   Object size: ${s3Record.s3.object.size} bytes`);
+            console.log(`[${requestId}]   Event time: ${s3Record.eventTime}`);
+
+            const keyParts = objectKey.split('/');
+            if (keyParts.length !== 3 || keyParts[0] !== 'embeddings') {
+                throw new Error(`Invalid S3 key format: ${objectKey}. Expected: embeddings/documentId/chunkId.json`);
+            }
+            
+            const documentId = keyParts[1];
+            const chunkFileName = keyParts[2];
+            const chunkId = chunkFileName.replace('.json', '');
+
+            console.log(`[${requestId}] 🔍 Step 2: Downloading embedding file from S3...`);
+            
+            const embeddingResult = await downloadEmbeddingFile(
+                bucketName,
+                objectKey,
+                requestId
+            );
+
+            console.log(`[${requestId}] ✅ Step 2 PASSED: Embedding file downloaded`);
+            console.log(`[${requestId}]   Document ID: ${embeddingResult.documentId}`);
+            console.log(`[${requestId}]   Chunk ID: ${embeddingResult.chunkId}`);
+            console.log(`[${requestId}]   Chunk index: ${embeddingResult.chunkIndex}`);
+            console.log(`[${requestId}]   Vector dimensions: ${embeddingResult.embedding.length}`);
+            console.log(`[${requestId}]   Content length: ${embeddingResult.content.length} chars`);
+
+            console.log(`[${requestId}] 🔍 Step 3: Creating vector index entry...`);
+            
+            const vectorId = randomUUID();
+            const vectorIndexEntry: VectorIndexEntry = {
+                documentId: embeddingResult.documentId,
+                processingId: embeddingResult.processingId,
+                chunkId: embeddingResult.chunkId,
+                chunkIndex: embeddingResult.chunkIndex,
+                vector: embeddingResult.embedding,
+                content: embeddingResult.content,
+                metadata: {
+                    originalDocumentInfo: embeddingResult.originalDocumentInfo,
+                    embeddingMetadata: embeddingResult.embeddingMetadata,
+                    indexedAt: new Date().toISOString(),
+                    vectorId,
+                    source: embeddingResult.source
+                }
+            };
+
+            console.log(`[${requestId}] ✅ Step 3 PASSED: Vector index entry created`);
+            console.log(`[${requestId}] 🔍 Step 4: Storing vector index entry...`);
+
+            const indexKey = `vectors/${embeddingResult.documentId}/${vectorId}.json`;
+            await storeVectorIndexEntry(indexKey, vectorIndexEntry, requestId);
+
+            const totalDuration = Date.now() - startTime;
+            console.log(`[${requestId}] ✅ Step 4 PASSED: Vector index entry stored`);
+            console.log(`[${requestId}] ✅ Vector storage task completed successfully in ${totalDuration}ms`);
+            console.log(`[${requestId}]   Vector ID: ${vectorId}`);
+            console.log(`[${requestId}]   Dimensions: ${embeddingResult.embedding.length}`);
+            console.log(`[${requestId}]   Index location: ${indexKey}`);
+            
+            return vectorId;
         }
         
-        const documentId = keyParts[1];
-        const chunkFileName = keyParts[2];
-        const chunkId = chunkFileName.replace('.json', '');
+        throw new Error("No S3 records found in the event.");
 
-        console.log(`[${requestId}] 🔍 Step 2: Downloading embedding file from S3...`);
-        
-        const embeddingResult = await downloadEmbeddingFile(
-            s3Event.s3.bucket.name,
-            s3Event.s3.object.key,
-            requestId
-        );
-
-        console.log(`[${requestId}] ✅ Step 2 PASSED: Embedding file downloaded`);
-        console.log(`[${requestId}]   Document ID: ${embeddingResult.documentId}`);
-        console.log(`[${requestId}]   Chunk ID: ${embeddingResult.chunkId}`);
-        console.log(`[${requestId}]   Chunk index: ${embeddingResult.chunkIndex}`);
-        console.log(`[${requestId}]   Vector dimensions: ${embeddingResult.embedding.length}`);
-        console.log(`[${requestId}]   Content length: ${embeddingResult.content.length} chars`);
-
-        console.log(`[${requestId}] 🔍 Step 3: Creating vector index entry...`);
-        
-        const vectorId = randomUUID();
-        const vectorIndexEntry: VectorIndexEntry = {
-            documentId: embeddingResult.documentId,
-            processingId: embeddingResult.processingId,
-            chunkId: embeddingResult.chunkId,
-            chunkIndex: embeddingResult.chunkIndex,
-            vector: embeddingResult.embedding,
-            content: embeddingResult.content,
-            metadata: {
-                originalDocumentInfo: embeddingResult.originalDocumentInfo,
-                embeddingMetadata: embeddingResult.embeddingMetadata,
-                indexedAt: new Date().toISOString(),
-                vectorId,
-                source: embeddingResult.source
-            }
-        };
-
-        console.log(`[${requestId}] ✅ Step 3 PASSED: Vector index entry created`);
-        console.log(`[${requestId}] 🔍 Step 4: Storing vector index entry...`);
-
-        const indexKey = `vectors/${embeddingResult.documentId}/${vectorId}.json`;
-        await storeVectorIndexEntry(indexKey, vectorIndexEntry, requestId);
-
-        const totalDuration = Date.now() - startTime;
-        console.log(`[${requestId}] ✅ Step 4 PASSED: Vector index entry stored`);
-        console.log(`[${requestId}] ✅ Vector storage task completed successfully in ${totalDuration}ms`);
-        console.log(`[${requestId}]   Vector ID: ${vectorId}`);
-        console.log(`[${requestId}]   Dimensions: ${embeddingResult.embedding.length}`);
-        console.log(`[${requestId}]   Index location: ${indexKey}`);
-        
-        return vectorId;
-        
     } catch (error) {
         const totalDuration = Date.now() - startTime;
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -228,7 +214,7 @@ async function downloadEmbeddingFile(
     objectKey: string,
     requestId: string
 ): Promise<EmbeddingResult> {
-    console.log(`[${requestId}] 📥 Downloading embedding file: s3:
+    console.log(`[${requestId}] 📥 Downloading embedding file: s3://${bucketName}/${objectKey}`);
 
     try {
         const getObjectResponse = await s3Client.send(
@@ -253,7 +239,8 @@ async function downloadEmbeddingFile(
 
     } catch (error) {
         console.error(`[${requestId}] ❌ Failed to download embedding file:`, error);
-        throw new Error(`Failed to download embedding file from s3:
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to download embedding file from s3: ${errorMessage}`);
     }
 }
 
@@ -290,6 +277,7 @@ async function storeVectorIndexEntry(
 
     } catch (error) {
         console.error(`[${requestId}] ❌ Failed to store vector index entry:`, error);
-        throw new Error(`Failed to store vector index entry to s3:
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to store vector index entry to s3: ${errorMessage}`);
     }
 } 
