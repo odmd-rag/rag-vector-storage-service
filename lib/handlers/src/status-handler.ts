@@ -169,16 +169,16 @@ async function checkS3ObjectExists(bucketName: string, key: string, requestId: s
             Key: key
         }));
         
-        console.log(`[${requestId}] Object exists: s3:
+        console.log(`[${requestId}] Object exists: s3://${bucketName}/${key}`);
         return true;
         
     } catch (error: any) {
         if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
-            console.log(`[${requestId}] Object not found: s3:
+            console.log(`[${requestId}] Object not found: s3://${bucketName}/${key}`);
             return false;
         }
         
-        console.error(`[${requestId}] Error checking object existence s3:
+        console.error(`[${requestId}] Error checking object existence s3://${bucketName}/${key}:`, error);
         throw error;
     }
 }

@@ -102,7 +102,7 @@ async function processDlqMessage(record: SQSRecord, requestId: string): Promise<
         await storeDlqFailureRecord(failureKey, failedTask, requestId);
 
         console.log(`[${requestId}] ✅ DLQ message processed and failure recorded`);
-        console.log(`[${requestId}]   Failure record: s3:
+        console.log(`[${requestId}]   Failure record: s3://${VECTOR_METADATA_BUCKET}/${failureKey}`);
         
     } catch (error) {
         console.error(`[${requestId}] ❌ Failed to process DLQ message:`, error);
@@ -141,6 +141,6 @@ async function storeDlqFailureRecord(
 
     } catch (error) {
         console.error(`[${requestId}] ❌ Failed to store DLQ failure record:`, error);
-        throw new Error(`Failed to store DLQ failure record to s3:
+        throw new Error(`Failed to store DLQ failure record to s3://${VECTOR_METADATA_BUCKET}/${objectKey}: ${error}`);
     }
 } 
