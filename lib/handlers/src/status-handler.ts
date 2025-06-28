@@ -92,13 +92,10 @@ async function getDocumentVectorStorageStatus(documentId: string, requestId: str
     const startTime = Date.now();
     
     try {
-        // Check if we have vector metadata for this document
-        // The vector processor stores metadata with format: {documentId}-vector-metadata.json
         const vectorMetadataKey = `${documentId}-vector-metadata.json`;
         const vectorMetadataExists = await checkS3ObjectExists(VECTOR_METADATA_BUCKET, vectorMetadataKey, requestId);
         
         if (vectorMetadataExists) {
-            // Vectors are processed - get metadata
             console.log(`[${requestId}] Document ${documentId} found in vector metadata bucket`);
             
             const metadata = await getVectorProcessingMetadata(documentId, requestId);
@@ -116,17 +113,14 @@ async function getDocumentVectorStorageStatus(documentId: string, requestId: str
             };
         }
         
-        // Check if there's a vector storage error
         const errorStatus = await checkVectorStorageError(documentId, requestId);
         if (errorStatus) {
             return errorStatus;
         }
         
-        // Check if embeddings exist (prerequisite for vector storage)
         const embeddingsExist = await checkEmbeddingsExist(documentId, requestId);
         
         if (embeddingsExist) {
-            // Embeddings exist but not indexed yet
             console.log(`[${requestId}] Document ${documentId} has embeddings but not indexed yet`);
             
             return {
@@ -140,7 +134,6 @@ async function getDocumentVectorStorageStatus(documentId: string, requestId: str
                 }
             };
         } else {
-            // Embeddings don't exist - embedding generation not complete
             console.log(`[${requestId}] Document ${documentId} embeddings not found`);
             
             return {
@@ -176,16 +169,16 @@ async function checkS3ObjectExists(bucketName: string, key: string, requestId: s
             Key: key
         }));
         
-        console.log(`[${requestId}] Object exists: s3://${bucketName}/${key}`);
+        console.log(`[${requestId}] Object exists: s3:
         return true;
         
     } catch (error: any) {
         if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
-            console.log(`[${requestId}] Object not found: s3://${bucketName}/${key}`);
+            console.log(`[${requestId}] Object not found: s3:
             return false;
         }
         
-        console.error(`[${requestId}] Error checking object existence s3://${bucketName}/${key}:`, error);
+        console.error(`[${requestId}] Error checking object existence s3:
         throw error;
     }
 }
@@ -194,7 +187,6 @@ async function getVectorProcessingMetadata(documentId: string, requestId: string
     try {
         const vectorMetadataKey = `${documentId}-vector-metadata.json`;
         
-        // Check if the metadata file exists and get basic info from S3 metadata
         const command = new HeadObjectCommand({
             Bucket: VECTOR_METADATA_BUCKET,
             Key: vectorMetadataKey
@@ -202,7 +194,6 @@ async function getVectorProcessingMetadata(documentId: string, requestId: string
         
         const response = await s3Client.send(command);
         
-        // Return metadata that matches what the vector processor stores
         const metadata = {
             documentId,
             status: response.Metadata?.['status'] || 'completed',
@@ -222,14 +213,12 @@ async function getVectorProcessingMetadata(documentId: string, requestId: string
 
 async function checkVectorStorageError(documentId: string, requestId: string): Promise<DocumentStatus | null> {
     try {
-        // Check for error status files in vector metadata bucket
         const errorKey = `errors/${documentId}.json`;
         const errorExists = await checkS3ObjectExists(VECTOR_METADATA_BUCKET, errorKey, requestId);
         
         if (errorExists) {
             console.log(`[${requestId}] Found vector storage error status for document ${documentId}`);
             
-            // Get error details from metadata
             const command = new HeadObjectCommand({
                 Bucket: VECTOR_METADATA_BUCKET,
                 Key: errorKey
@@ -260,7 +249,6 @@ async function checkVectorStorageError(documentId: string, requestId: string): P
 
 async function checkEmbeddingsExist(documentId: string, requestId: string): Promise<boolean> {
     try {
-        // Check for embeddings file
         const embeddingsKey = `embeddings/${documentId}.json`;
         const exists = await checkS3ObjectExists(EMBEDDINGS_BUCKET_NAME, embeddingsKey, requestId);
         
@@ -283,7 +271,7 @@ async function checkHomeServerIndex(documentId: string, requestId: string): Prom
         const searchRequest = {
             query: `documentId:${documentId}`,
             limit: 1,
-            threshold: 0.0 // Very low threshold to find any match
+            threshold: 0.0
         };
         
         const response = await fetch(searchUrl, {
@@ -293,7 +281,7 @@ async function checkHomeServerIndex(documentId: string, requestId: string): Prom
                 'User-Agent': 'RAG-VectorStorage-StatusCheck/1.0'
             },
             body: JSON.stringify(searchRequest),
-            signal: AbortSignal.timeout(5000) // 5 second timeout
+            signal: AbortSignal.timeout(5000)
         });
         
         if (!response.ok) {
@@ -309,7 +297,6 @@ async function checkHomeServerIndex(documentId: string, requestId: string): Prom
         
     } catch (error) {
         console.error(`[${requestId}] Error checking home server index for ${documentId}:`, error);
-        // Don't fail the entire status check if home server is temporarily unavailable
         return false;
     }
 } 

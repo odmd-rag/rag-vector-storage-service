@@ -2,10 +2,8 @@ import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure } f
 import { S3Client, GetObjectCommand, PutObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
 
-// Initialize AWS clients
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'us-east-2' });
 
-// Environment variables
 const VECTOR_INDEX_BUCKET = process.env.VECTOR_INDEX_BUCKET!;
 
 interface S3EventRecord {
@@ -91,9 +89,8 @@ export const handler = async (event: SQSEvent, context: Context): Promise<SQSBat
     console.log(`[${requestId}] Records to process: ${event.Records.length}`);
 
     const batchItemFailures: SQSBatchItemFailure[] = [];
-    const maxConcurrency = Math.min(event.Records.length, 8); // Process max 8 vectors in parallel
+    const maxConcurrency = Math.min(event.Records.length, 8);
     
-    // Process records in batches with concurrency control
     const processPromises = event.Records.map(async (record) => {
         const recordStartTime = Date.now();
         try {
@@ -108,7 +105,6 @@ export const handler = async (event: SQSEvent, context: Context): Promise<SQSBat
             const recordDuration = Date.now() - recordStartTime;
             console.error(`[${requestId}] ❌ Failed to process record ${record.messageId} after ${recordDuration}ms:`, error);
             
-            // Add to batch failures for individual retry
             batchItemFailures.push({
                 itemIdentifier: record.messageId
             });
@@ -117,7 +113,6 @@ export const handler = async (event: SQSEvent, context: Context): Promise<SQSBat
         }
     });
 
-    // Process with concurrency limit
     const results = [];
     for (let i = 0; i < processPromises.length; i += maxConcurrency) {
         const batch = processPromises.slice(i, i + maxConcurrency);
@@ -159,7 +154,6 @@ async function processVectorTask(record: SQSRecord, requestId: string): Promise<
         console.log(`[${requestId}]   Object size: ${s3Event.s3.object.size} bytes`);
         console.log(`[${requestId}]   Event time: ${s3Event.eventTime}`);
 
-        // Extract document and chunk IDs from S3 key (embeddings/documentId/chunkId.json)
         const keyParts = s3Event.s3.object.key.split('/');
         if (keyParts.length !== 3 || keyParts[0] !== 'embeddings') {
             throw new Error(`Invalid S3 key format: ${s3Event.s3.object.key}. Expected: embeddings/documentId/chunkId.json`);
@@ -171,7 +165,6 @@ async function processVectorTask(record: SQSRecord, requestId: string): Promise<
 
         console.log(`[${requestId}] 🔍 Step 2: Downloading embedding file from S3...`);
         
-        // Download the embedding file
         const embeddingResult = await downloadEmbeddingFile(
             s3Event.s3.bucket.name,
             s3Event.s3.object.key,
@@ -187,7 +180,6 @@ async function processVectorTask(record: SQSRecord, requestId: string): Promise<
 
         console.log(`[${requestId}] 🔍 Step 3: Creating vector index entry...`);
         
-        // Create vector index entry
         const vectorId = randomUUID();
         const vectorIndexEntry: VectorIndexEntry = {
             documentId: embeddingResult.documentId,
@@ -208,7 +200,6 @@ async function processVectorTask(record: SQSRecord, requestId: string): Promise<
         console.log(`[${requestId}] ✅ Step 3 PASSED: Vector index entry created`);
         console.log(`[${requestId}] 🔍 Step 4: Storing vector index entry...`);
 
-        // Store vector index entry
         const indexKey = `vectors/${embeddingResult.documentId}/${vectorId}.json`;
         await storeVectorIndexEntry(indexKey, vectorIndexEntry, requestId);
 
@@ -237,7 +228,7 @@ async function downloadEmbeddingFile(
     objectKey: string,
     requestId: string
 ): Promise<EmbeddingResult> {
-    console.log(`[${requestId}] 📥 Downloading embedding file: s3://${bucketName}/${objectKey}`);
+    console.log(`[${requestId}] 📥 Downloading embedding file: s3:
 
     try {
         const getObjectResponse = await s3Client.send(
@@ -262,7 +253,7 @@ async function downloadEmbeddingFile(
 
     } catch (error) {
         console.error(`[${requestId}] ❌ Failed to download embedding file:`, error);
-        throw new Error(`Failed to download embedding file from s3://${bucketName}/${objectKey}: ${error}`);
+        throw new Error(`Failed to download embedding file from s3:
     }
 }
 
@@ -299,6 +290,6 @@ async function storeVectorIndexEntry(
 
     } catch (error) {
         console.error(`[${requestId}] ❌ Failed to store vector index entry:`, error);
-        throw new Error(`Failed to store vector index entry to s3://${VECTOR_INDEX_BUCKET}/${objectKey}: ${error}`);
+        throw new Error(`Failed to store vector index entry to s3:
     }
 } 

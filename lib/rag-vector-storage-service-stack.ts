@@ -36,47 +36,40 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
         const apiSubdomain = ('vs-api.' + myEnver.targetRevision.value + '.' + myEnver.owner.buildId).toLowerCase();
         this.apiDomain = `${apiSubdomain}.${this.zoneName}`;
 
-        // === CONSUMING from other services via OndemandEnv contracts ===
         const embeddingsBucketName = myEnver.embeddingSubscription.getSharedValue(this);
         const homeServerDomain = myEnver.homeServerDomain.getSharedValue(this);
         const clientId = myEnver.authProviderClientId.getSharedValue(this);
         const providerName = myEnver.authProviderName.getSharedValue(this);
 
-        // === S3 BUCKETS FOR VECTOR STORAGE STATUS ===
 
         const vectorMetadataBucket = new s3.Bucket(this, 'VecMetadataBucket', {
-            bucketName: `rag-vector-metadata-${this.account}-${this.region}`,
             versioned: false,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             autoDeleteObjects: true,
             lifecycleRules: [{
                 id: 'DeleteOldVectorMetadata',
                 enabled: true,
-                expiration: cdk.Duration.days(365), // Keep vector metadata for a year
+                expiration: cdk.Duration.days(365),
             }],
             publicReadAccess: false,
             blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
         });
 
         const vectorBackupBucket = new s3.Bucket(this, 'VecBackupBucket', {
-            bucketName: `rag-vector-backup-${this.account}-${this.region}`,
             versioned: true,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             autoDeleteObjects: true,
             lifecycleRules: [{
                 id: 'DeleteOldVectorBackups',
                 enabled: true,
-                expiration: cdk.Duration.days(30), // Keep backups for 30 days
+                expiration: cdk.Duration.days(30),
             }],
             publicReadAccess: false,
             blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
         });
 
-        // === LAMBDA FUNCTIONS ===
 
-        // Status handler Lambda for WebUI tracking
         const statusHandler = new NodejsFunction(this, 'VecStatusHandler', {
-            functionName: `rag-vector-storage-status-${this.account}-${this.region}`,
             entry: __dirname + '/handlers/src/status-handler.ts',
             runtime: lambda.Runtime.NODEJS_22_X,
             handler: 'handler',
@@ -92,9 +85,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             },
         });
 
-        // Health check Lambda for monitoring home server
         const healthCheckHandler = new NodejsFunction(this, 'VecHealthCheckHandler', {
-            functionName: `rag-vector-storage-health-check-${this.account}-${this.region}`,
             runtime: lambda.Runtime.NODEJS_22_X,
             handler: 'handler',
             entry: __dirname + '/handlers/src/health-check.ts',
@@ -107,25 +98,19 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             },
         });
 
-        // ❌ REMOVED: Checkpoint table (no longer needed for event-driven architecture)
 
         
-        // === PERSISTENT SQS QUEUES (Won't be auto-deleted) ===
         
         const vectorProcessingDlq = new sqs.Queue(this, 'VecProcessingDlq', {
-            queueName: `rag-vector-processing-dlq-${this.account}-${this.region}`,
             retentionPeriod: cdk.Duration.days(14),
-            removalPolicy: cdk.RemovalPolicy.RETAIN,          // Prevent auto-deletion
+            removalPolicy: cdk.RemovalPolicy.RETAIN,
         });
 
         const vectorProcessingQueue = new sqs.Queue(this, 'VecProcessingQueue', {
-            queueName: `rag-vector-processing-queue-${this.account}-${this.region}`,
-            
-            // Optimized for dynamic batching
-            visibilityTimeout: cdk.Duration.minutes(10),      // Vector processing timeout
-            receiveMessageWaitTime: cdk.Duration.seconds(20), // Long polling
-            retentionPeriod: cdk.Duration.days(14),           // Message durability
-            removalPolicy: cdk.RemovalPolicy.RETAIN,          // Prevent auto-deletion
+            visibilityTimeout: cdk.Duration.minutes(10),
+            receiveMessageWaitTime: cdk.Duration.seconds(20),
+            retentionPeriod: cdk.Duration.days(14),
+            removalPolicy: cdk.RemovalPolicy.RETAIN,
             
             deadLetterQueue: {
                 queue: vectorProcessingDlq,
@@ -133,14 +118,12 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             }
         });
 
-        // Vector processing Lambda (processes embeddings from SQS)
         const vectorProcessorHandler = new NodejsFunction(this, 'VecProcessorHandler', {
-            functionName: `rag-vector-processor-${this.account}-${this.region}`,
             runtime: lambda.Runtime.NODEJS_22_X,
             handler: 'handler',
             entry: __dirname + '/handlers/src/vector-processor.ts',
-            timeout: cdk.Duration.minutes(3),                  // Reduced for batch processing
-            memorySize: 1024,                                  // Optimized for batching
+            timeout: cdk.Duration.minutes(3),
+            memorySize: 1024,
             logRetention: logs.RetentionDays.ONE_WEEK,
             environment: {
                 HOME_SERVER_DOMAIN: homeServerDomain,
@@ -148,9 +131,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             },
         });
 
-        // DLQ handler Lambda (processes failed vector processing messages)
         const vectorDlqHandler = new NodejsFunction(this, 'VecDlqHandler', {
-            functionName: `rag-vector-dlq-handler-${this.account}-${this.region}`,
             runtime: lambda.Runtime.NODEJS_22_X,
             handler: 'handler',
             entry: __dirname + '/handlers/src/dlq-handler.ts',
@@ -162,9 +143,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             },
         });
 
-        // === PERMISSIONS ===
 
-        // Grant S3 permissions
         const embeddingsBucket = s3.Bucket.fromBucketName(this, 'VecEmbeddingsBucket', embeddingsBucketName);
         embeddingsBucket.grantRead(statusHandler);
         embeddingsBucket.grantRead(vectorProcessorHandler);
@@ -173,9 +152,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
         vectorMetadataBucket.grantReadWrite(healthCheckHandler);
         vectorMetadataBucket.grantReadWrite(vectorProcessorHandler);
 
-        // === NEW: S3 → SQS EVENT NOTIFICATIONS FOR EMBEDDINGS ===
         
-        // Immediate notification when embeddings are created
         embeddingsBucket.addEventNotification(
             s3.EventType.OBJECT_CREATED,
             new s3n.SqsDestination(vectorProcessingQueue),
@@ -185,9 +162,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             }
         );
 
-        // === SQS EVENT SOURCES WITH DYNAMIC BATCHING ===
 
-        // Vector processing with dynamic batching
         vectorProcessorHandler.addEventSource(new lambdaEventSources.SqsEventSource(vectorProcessingQueue, {
             batchSize: 1000,
             maxBatchingWindow: cdk.Duration.seconds(5),
@@ -195,7 +170,6 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             reportBatchItemFailures: true,
         }));
 
-        // DLQ processing
         vectorDlqHandler.addEventSource(new lambdaEventSources.SqsEventSource(vectorProcessingDlq, {
             batchSize: 100,
             maxBatchingWindow: cdk.Duration.seconds(20),
@@ -203,15 +177,12 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             reportBatchItemFailures: true,
         }));
 
-        // Grant DLQ permissions
         vectorProcessingDlq.grantConsumeMessages(vectorDlqHandler);
         vectorMetadataBucket.grantReadWrite(vectorDlqHandler);
 
-        // === SCHEDULED MONITORING ===
 
-        // EventBridge rule for health checks
         const healthCheckRule = new events.Rule(this, 'VecHealthCheckRule', {
-            schedule: events.Schedule.rate(cdk.Duration.minutes(10)), // Health check every 10 minutes
+            schedule: events.Schedule.rate(cdk.Duration.minutes(10)),
             description: 'Triggers health checks for home vector server',
         });
 
@@ -233,7 +204,6 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
         const webUiDomain = `https://up.${ingestionEnver.targetRevision.value}.${ingestionEnver.owner.buildId}.${this.zoneName}`.toLowerCase();
         allowedOrigins.push(`https://${webUiDomain}`);
 
-        // HTTP API Gateway with JWT authentication
         this.httpApi = new apigatewayv2.HttpApi(this, 'VecApi', {
             apiName: 'RAG Vector Storage Service',
             description: 'HTTP API for RAG vector storage service status with JWT authentication',
@@ -261,28 +231,19 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             },
         });
 
-        // Status endpoint
         this.httpApi.addRoutes({
             path: '/status/{documentId}',
             methods: [apigatewayv2.HttpMethod.GET],
             integration: new apigatewayv2Integrations.HttpLambdaIntegration('VecStatusIntegration', statusHandler),
         });
 
-        // Vector search proxy endpoint - TODO: Add when handler is implemented
-        // this.httpApi.addRoutes({
-        //     path: '/search',
-        //     methods: [apigatewayv2.HttpMethod.POST],
-        //     integration: new apigatewayv2Integrations.HttpLambdaIntegration('VecSearchIntegration', vectorStorageProxyHandler),
-        // });
 
-        // Health check endpoint
         this.httpApi.addRoutes({
             path: '/health',
             methods: [apigatewayv2.HttpMethod.GET],
             integration: new apigatewayv2Integrations.HttpLambdaIntegration('VecHealthIntegration', healthCheckHandler),
         });
 
-        // Set up custom domain for API Gateway
         const hostedZone = HostedZone.fromHostedZoneAttributes(this, 'VecApiHostedZone', {
             hostedZoneId: this.hostedZoneId,
             zoneName: this.zoneName,
@@ -312,7 +273,6 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             recordName: apiSubdomain,
         });
 
-        // === OUTPUTS ===
 
         new cdk.CfnOutput(this, 'VecMetadataBucketName', {
             value: vectorMetadataBucket.bucketName,
@@ -344,12 +304,10 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             description: 'SQS queue for vector processing tasks (event-driven)',
         });
 
-        // OndemandEnv Producers - Share values with other services
         new OdmdShareOut(
             this, new Map([
-                // Vector database resources
                 [myEnver.vectorStorage.vectorDatabaseEndpoint, homeServerDomain],
-                [myEnver.vectorStorage.vectorIndexName, 'rag-documents'], // Default index name
+                [myEnver.vectorStorage.vectorIndexName, 'rag-documents'],
                 [myEnver.vectorStorage.vectorMetadataBucket, vectorMetadataBucket.bucketName],
                 [myEnver.vectorStorage.vectorBackupBucket, vectorBackupBucket.bucketName],
 

@@ -27,7 +27,6 @@ export const handler: Handler<ScheduledEvent | APIGatewayProxyEvent> = async (ev
     };
 
     try {
-        // Test home server connectivity
         console.log(`Testing connectivity to: ${homeServerDomain}`);
         
         const homeServerStart = Date.now();
@@ -36,7 +35,7 @@ export const handler: Handler<ScheduledEvent | APIGatewayProxyEvent> = async (ev
             headers: {
                 'User-Agent': 'AWS-HealthCheck/1.0'
             },
-            signal: AbortSignal.timeout(10000) // 10 second timeout
+            signal: AbortSignal.timeout(10000)
         });
 
         const homeServerResponseTime = Date.now() - homeServerStart;
@@ -65,7 +64,6 @@ export const handler: Handler<ScheduledEvent | APIGatewayProxyEvent> = async (ev
         homeServerReachable: healthResult.homeServer.reachable
     });
 
-    // If this is an API Gateway request, return HTTP response
     if ('httpMethod' in event) {
         return {
             statusCode: healthResult.status === 'healthy' ? 200 : 503,
@@ -77,6 +75,5 @@ export const handler: Handler<ScheduledEvent | APIGatewayProxyEvent> = async (ev
         } as APIGatewayProxyResult;
     }
 
-    // For scheduled events, just return the result
     return healthResult;
 }; 

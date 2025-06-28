@@ -1,10 +1,8 @@
 import { SQSEvent, SQSRecord, Context } from 'aws-lambda';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
-// Initialize AWS clients
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'us-east-2' });
 
-// Environment variables
 const VECTOR_METADATA_BUCKET = process.env.VECTOR_METADATA_BUCKET!;
 
 interface FailedVectorTask {
@@ -30,7 +28,6 @@ export const handler = async (event: SQSEvent, context: Context): Promise<void> 
     let processedCount = 0;
     let failedCount = 0;
 
-    // Process each failed message
     for (const record of event.Records) {
         const recordStartTime = Date.now();
         try {
@@ -45,7 +42,6 @@ export const handler = async (event: SQSEvent, context: Context): Promise<void> 
             failedCount++;
             const recordDuration = Date.now() - recordStartTime;
             console.error(`[${requestId}] ❌ Failed to process DLQ record ${record.messageId} after ${recordDuration}ms:`, error);
-            // Continue processing other messages even if one fails
         }
     }
 
@@ -63,15 +59,12 @@ async function processDlqMessage(record: SQSRecord, requestId: string): Promise<
     try {
         console.log(`[${requestId}] 🔍 Analyzing failed vector processing message...`);
         
-        // Parse the original message
         const originalMessage = JSON.parse(record.body);
         
-        // Extract S3 event details
         const s3Event = originalMessage;
         const objectKey = s3Event.s3?.object?.key || 'unknown';
         const bucketName = s3Event.s3?.bucket?.name || 'unknown';
         
-        // Extract document and chunk IDs from S3 key if possible
         let documentId = 'unknown';
         let chunkId = 'unknown';
         try {
@@ -92,7 +85,6 @@ async function processDlqMessage(record: SQSRecord, requestId: string): Promise<
         console.log(`[${requestId}]   Chunk ID: ${chunkId}`);
         console.log(`[${requestId}]   Receive count: ${record.attributes?.ApproximateReceiveCount || 'unknown'}`);
 
-        // Create failure record
         const failedTask: FailedVectorTask = {
             messageId: record.messageId,
             originalS3Event: originalMessage,
@@ -106,12 +98,11 @@ async function processDlqMessage(record: SQSRecord, requestId: string): Promise<
 
         console.log(`[${requestId}] 🔍 Storing failure record for analysis...`);
 
-        // Store failure record for manual analysis
         const failureKey = `failed-vectors/${documentId}/${chunkId}-${record.messageId}.json`;
         await storeDlqFailureRecord(failureKey, failedTask, requestId);
 
         console.log(`[${requestId}] ✅ DLQ message processed and failure recorded`);
-        console.log(`[${requestId}]   Failure record: s3://${VECTOR_METADATA_BUCKET}/${failureKey}`);
+        console.log(`[${requestId}]   Failure record: s3:
         
     } catch (error) {
         console.error(`[${requestId}] ❌ Failed to process DLQ message:`, error);
@@ -150,6 +141,6 @@ async function storeDlqFailureRecord(
 
     } catch (error) {
         console.error(`[${requestId}] ❌ Failed to store DLQ failure record:`, error);
-        throw new Error(`Failed to store DLQ failure record to s3://${VECTOR_METADATA_BUCKET}/${objectKey}: ${error}`);
+        throw new Error(`Failed to store DLQ failure record to s3:
     }
 } 
