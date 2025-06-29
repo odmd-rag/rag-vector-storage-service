@@ -1,5 +1,5 @@
 import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure, S3Event } from 'aws-lambda';
-import { S3Client, GetObjectCommand, PutObjectCommand, GetObjectTaggingCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
 
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'us-east-2' });
