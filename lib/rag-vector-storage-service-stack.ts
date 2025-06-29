@@ -37,7 +37,6 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
         this.apiDomain = `${apiSubdomain}.${this.zoneName}`;
 
         const embeddingsBucketName = myEnver.embeddingSubscription.getSharedValue(this);
-        const processedContentBucketName = (myEnver.embeddingSubscription.producer as EmbeddingStorageProducer).owner.processedContentSubscription.getSharedValue(this);
         const homeServerDomain = myEnver.homeServerDomain.getSharedValue(this);
         const clientId = myEnver.authProviderClientId.getSharedValue(this);
         const providerName = myEnver.authProviderName.getSharedValue(this);
@@ -146,11 +145,9 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
 
 
         const embeddingsBucket = s3.Bucket.fromBucketName(this, 'VecEmbeddingsBucket', embeddingsBucketName);
-        const processedContentBucket = s3.Bucket.fromBucketName(this, 'VecProcessedContentBucket', processedContentBucketName);
         
         embeddingsBucket.grantRead(statusHandler);
         embeddingsBucket.grantRead(vectorProcessorHandler);
-        processedContentBucket.grantRead(vectorProcessorHandler);
 
         vectorMetadataBucket.grantRead(statusHandler);
         vectorMetadataBucket.grantReadWrite(healthCheckHandler);
