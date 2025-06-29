@@ -128,6 +128,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             environment: {
                 HOME_SERVER_DOMAIN: homeServerDomain,
                 VECTOR_METADATA_BUCKET: vectorMetadataBucket.bucketName,
+                EMBEDDINGS_BUCKET_NAME: embeddingsBucketName,
             },
         });
 
@@ -145,19 +146,18 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
 
 
         const embeddingsBucket = s3.Bucket.fromBucketName(this, 'VecEmbeddingsBucket', embeddingsBucketName);
-        
         embeddingsBucket.grantRead(statusHandler);
-        embeddingsBucket.grantRead(vectorProcessorHandler);
+        embeddingsBucket.grantReadWrite(vectorProcessorHandler);
 
         vectorMetadataBucket.grantRead(statusHandler);
         vectorMetadataBucket.grantReadWrite(healthCheckHandler);
         vectorMetadataBucket.grantReadWrite(vectorProcessorHandler);
 
-        // Listen to embeddings bucket for embedding-status objects
+        
         embeddingsBucket.addEventNotification(
             s3.EventType.OBJECT_CREATED,
             new s3n.SqsDestination(vectorProcessingQueue),
-            {
+            { 
                 prefix: 'embedding-status/',
                 suffix: '.json'
             }
