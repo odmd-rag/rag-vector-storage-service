@@ -154,9 +154,12 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
 
         
         embeddingsBucket.addEventNotification(
-            s3.EventType.OBJECT_TAGGING_PUT,
-            new s3n.SqsDestination(vectorProcessingQueue)
-            // Filtering for 'embedding-status: completed' will be handled by the consumer Lambda.
+            s3.EventType.OBJECT_CREATED,
+            new s3n.SqsDestination(vectorProcessingQueue),
+            { 
+                prefix: 'embeddings-ready-for-storage/',
+                suffix: '.json'
+            }
         );
 
 

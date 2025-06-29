@@ -1,87 +1,283 @@
-import { SQSEvent, Context, SQSBatchResponse, SQSBatchItemFailure, S3Event, SQSRecord } from 'aws-lambda';
-import { S3Client, GetObjectCommand, GetObjectTaggingCommand } from '@aws-sdk/client-s3';
-import { Pinecone } from '@pinecone-database/pinecone';
+import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure, S3Event } from 'aws-lambda';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
 
-const s3Client = new S3Client();
+const s3Client = new S3Client({ region: process.env.AWS_REGION || 'us-east-2' });
 
-if (!process.env.PINECONE_API_KEY) {
-    throw new Error('Missing PINECONE_API_KEY environment variable');
-}
-const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
-const PINECONE_INDEX_NAME = process.env.PINECONE_INDEX_NAME || 'rag-documents';
-const pineconeIndex = pinecone.index(PINECONE_INDEX_NAME);
+const VECTOR_INDEX_BUCKET = process.env.VECTOR_INDEX_BUCKET!;
 
-interface EmbeddingRecord {
+interface EmbeddingResult {
     documentId: string;
-    originalChunks: { content: string }[];
-    embeddings: { chunkId: string; vector: number[] }[];
+    processingId: string;
+    chunkId: string;
+    chunkIndex: number;
+    embedding: number[];
+    content: string;
+    originalDocumentInfo: {
+        bucketName: string;
+        objectKey: string;
+        contentType: string;
+        fileSize: number;
+    };
+    embeddingMetadata: {
+        model: string;
+        dimensions: number;
+        tokenCount: number;
+        processingTimeMs: number;
+    };
+    processedAt: string;
+    source: string;
 }
 
+interface VectorIndexEntry {
+    documentId: string;
+    processingId: string;
+    chunkId: string;
+    chunkIndex: number;
+    vector: number[];
+    content: string;
+    metadata: {
+        originalDocumentInfo: {
+            bucketName: string;
+            objectKey: string;
+            contentType: string;
+            fileSize: number;
+        };
+        embeddingMetadata: {
+            model: string;
+            dimensions: number;
+            tokenCount: number;
+            processingTimeMs: number;
+        };
+        indexedAt: string;
+        vectorId: string;
+        source: string;
+    };
+}
+
+/**
+ * Lambda handler for processing vector storage tasks from SQS (S3 events)
+ */
 export const handler = async (event: SQSEvent, context: Context): Promise<SQSBatchResponse> => {
-    const batchItemFailures: SQSBatchItemFailure[] = [];
-
-    for (const record of event.Records) {
-        try {
-            await processVector(record, context.awsRequestId);
-        } catch (error) {
-            console.error(`[${context.awsRequestId}] ❌ Failed to process record ${record.messageId}:`, error);
-            batchItemFailures.push({ itemIdentifier: record.messageId });
-        }
-    }
-
-    return { batchItemFailures };
-};
-
-async function processVector(record: SQSRecord, requestId: string): Promise<void> {
     const startTime = Date.now();
-    const { bucketName, objectKey, documentId } = parseS3Event(record);
-
-    console.log(`[${requestId}] 🔍 Starting vector processing for s3://${bucketName}/${objectKey}`);
-
-    const tags = await s3Client.send(new GetObjectTaggingCommand({ Bucket: bucketName, Key: objectKey }));
-    const embeddingStatus = tags.TagSet?.find(tag => tag.Key === 'embedding-status')?.Value;
-    if (embeddingStatus !== 'completed') {
-        console.log(`[${requestId}] ⏭️ Skipping document. Embedding status is '${embeddingStatus || 'not set'}'.`);
-        return;
-    }
-    console.log(`[${requestId}] ✅ Document approved for vector storage.`);
-
-    const embeddingData = await downloadEmbeddingData(bucketName, objectKey, requestId);
+    const requestId = context.awsRequestId;
     
-    console.log(`[${requestId}] 🔍 Preparing ${embeddingData.embeddings.length} vectors for upsert...`);
-    const vectorsToUpsert = embeddingData.embeddings.map((embedding, index) => ({
-        id: embedding.chunkId,
-        values: embedding.vector,
-        metadata: {
-            documentId: embeddingData.documentId,
-            text: embeddingData.originalChunks[index]?.content || ''
-        }
-    }));
+    console.log(`[${requestId}] === Vector Processor Lambda Started ===`);
+    console.log(`[${requestId}] Function: ${context.functionName}:${context.functionVersion}`);
+    console.log(`[${requestId}] Memory limit: ${context.memoryLimitInMB}MB`);
+    console.log(`[${requestId}] Remaining time: ${context.getRemainingTimeInMillis()}ms`);
+    console.log(`[${requestId}] Records to process: ${event.Records.length}`);
 
-    if (vectorsToUpsert.length > 0) {
-        await pineconeIndex.upsert(vectorsToUpsert);
-        console.log(`[${requestId}] ✅ Successfully upserted ${vectorsToUpsert.length} vectors to Pinecone.`);
-    } else {
-        console.log(`[${requestId}] ⚠️ No vectors to upsert.`);
+    const batchItemFailures: SQSBatchItemFailure[] = [];
+    const maxConcurrency = Math.min(event.Records.length, 8);
+    
+    const processPromises = event.Records.map(async (record) => {
+        const recordStartTime = Date.now();
+        try {
+            console.log(`[${requestId}] Processing SQS record: ${record.messageId}`);
+            const vectorId = await processVectorTask(record, requestId);
+            
+            const recordDuration = Date.now() - recordStartTime;
+            console.log(`[${requestId}] ✅ Successfully processed record ${record.messageId} (vector: ${vectorId}) in ${recordDuration}ms`);
+            return { success: true, messageId: record.messageId, vectorId };
+            
+        } catch (error) {
+            const recordDuration = Date.now() - recordStartTime;
+            console.error(`[${requestId}] ❌ Failed to process record ${record.messageId} after ${recordDuration}ms:`, error);
+            
+            batchItemFailures.push({
+                itemIdentifier: record.messageId
+            });
+            
+            return { success: false, messageId: record.messageId, error };
+        }
+    });
+
+    const results = [];
+    for (let i = 0; i < processPromises.length; i += maxConcurrency) {
+        const batch = processPromises.slice(i, i + maxConcurrency);
+        const batchResults = await Promise.allSettled(batch);
+        results.push(...batchResults);
     }
+
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)).length;
 
     const totalDuration = Date.now() - startTime;
-    console.log(`[${requestId}] ✅ Vector processing completed in ${totalDuration}ms.`);
+    console.log(`[${requestId}] === Vector Processor Lambda Completed ===`);
+    console.log(`[${requestId}] Total execution time: ${totalDuration}ms`);
+    console.log(`[${requestId}] Processed: ${successful}/${event.Records.length}`);
+    console.log(`[${requestId}] Failed: ${failed}/${event.Records.length}`);
+    console.log(`[${requestId}] Batch failures: ${batchItemFailures.length}`);
+    console.log(`[${requestId}] Final remaining time: ${context.getRemainingTimeInMillis()}ms`);
+
+    return {
+        batchItemFailures
+    };
+};
+
+/**
+ * Process a single vector storage task from SQS (S3 event)
+ */
+async function processVectorTask(record: SQSRecord, requestId: string): Promise<string> {
+    const startTime = Date.now();
+    
+    try {
+        console.log(`[${requestId}] 🔍 Step 1: Parsing S3 event from SQS message...`);
+        const s3Event: S3Event = JSON.parse(record.body);
+
+        for (const s3Record of s3Event.Records) {
+            const bucketName = s3Record.s3.bucket.name;
+            const objectKey = decodeURIComponent(s3Record.s3.object.key.replace(/\+/g, ' '));
+            
+            console.log(`[${requestId}] 📋 S3 event details:`);
+            console.log(`[${requestId}]   Event: ${s3Record.eventName}`);
+            console.log(`[${requestId}]   Bucket: ${bucketName}`);
+            console.log(`[${requestId}]   Object key: ${objectKey}`);
+            console.log(`[${requestId}]   Object size: ${s3Record.s3.object.size} bytes`);
+            console.log(`[${requestId}]   Event time: ${s3Record.eventTime}`);
+
+            const keyParts = objectKey.split('/');
+            if (keyParts.length !== 3 || keyParts[0] !== 'embeddings') {
+                throw new Error(`Invalid S3 key format: ${objectKey}. Expected: embeddings/documentId/chunkId.json`);
+            }
+            
+            const documentId = keyParts[1];
+            const chunkFileName = keyParts[2];
+            const chunkId = chunkFileName.replace('.json', '');
+
+            console.log(`[${requestId}] 🔍 Step 2: Downloading embedding file from S3...`);
+            
+            const embeddingResult = await downloadEmbeddingFile(
+                bucketName,
+                objectKey,
+                requestId
+            );
+
+            console.log(`[${requestId}] ✅ Step 2 PASSED: Embedding file downloaded`);
+            console.log(`[${requestId}]   Document ID: ${embeddingResult.documentId}`);
+            console.log(`[${requestId}]   Chunk ID: ${embeddingResult.chunkId}`);
+            console.log(`[${requestId}]   Chunk index: ${embeddingResult.chunkIndex}`);
+            console.log(`[${requestId}]   Vector dimensions: ${embeddingResult.embedding.length}`);
+            console.log(`[${requestId}]   Content length: ${embeddingResult.content.length} chars`);
+
+            console.log(`[${requestId}] 🔍 Step 3: Creating vector index entry...`);
+            
+            const vectorId = randomUUID();
+            const vectorIndexEntry: VectorIndexEntry = {
+                documentId: embeddingResult.documentId,
+                processingId: embeddingResult.processingId,
+                chunkId: embeddingResult.chunkId,
+                chunkIndex: embeddingResult.chunkIndex,
+                vector: embeddingResult.embedding,
+                content: embeddingResult.content,
+                metadata: {
+                    originalDocumentInfo: embeddingResult.originalDocumentInfo,
+                    embeddingMetadata: embeddingResult.embeddingMetadata,
+                    indexedAt: new Date().toISOString(),
+                    vectorId,
+                    source: embeddingResult.source
+                }
+            };
+
+            console.log(`[${requestId}] ✅ Step 3 PASSED: Vector index entry created`);
+            console.log(`[${requestId}] 🔍 Step 4: Storing vector index entry...`);
+
+            const indexKey = `vectors/${embeddingResult.documentId}/${vectorId}.json`;
+            await storeVectorIndexEntry(indexKey, vectorIndexEntry, requestId);
+
+            const totalDuration = Date.now() - startTime;
+            console.log(`[${requestId}] ✅ Step 4 PASSED: Vector index entry stored`);
+            console.log(`[${requestId}] ✅ Vector storage task completed successfully in ${totalDuration}ms`);
+            console.log(`[${requestId}]   Vector ID: ${vectorId}`);
+            console.log(`[${requestId}]   Dimensions: ${embeddingResult.embedding.length}`);
+            console.log(`[${requestId}]   Index location: ${indexKey}`);
+            
+            return vectorId;
+        }
+        
+        throw new Error("No S3 records found in the event.");
+
+    } catch (error) {
+        const totalDuration = Date.now() - startTime;
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`[${requestId}] ❌ Failed to process vector task after ${totalDuration}ms:`, error);
+        throw error;
+    }
 }
 
-function parseS3Event(record: SQSRecord): { bucketName: string, objectKey: string, documentId: string } {
-    const s3Event: S3Event = JSON.parse(record.body);
-    const s3Record = s3Event.Records[0];
-    const bucketName = s3Record.s3.bucket.name;
-    const objectKey = decodeURIComponent(s3Record.s3.object.key.replace(/\+/g, ' '));
-    const documentId = objectKey.split('/').pop()?.replace('.json', '') || `unknown-id-${randomUUID()}`;
-    return { bucketName, objectKey, documentId };
+/**
+ * Download embedding file from S3
+ */
+async function downloadEmbeddingFile(
+    bucketName: string,
+    objectKey: string,
+    requestId: string
+): Promise<EmbeddingResult> {
+    console.log(`[${requestId}] 📥 Downloading embedding file: s3://${bucketName}/${objectKey}`);
+
+    try {
+        const getObjectResponse = await s3Client.send(
+            new GetObjectCommand({
+                Bucket: bucketName,
+                Key: objectKey
+            })
+        );
+
+        if (!getObjectResponse.Body) {
+            throw new Error('Empty response body from S3');
+        }
+
+        const embeddingData = await getObjectResponse.Body.transformToString();
+        const embeddingResult: EmbeddingResult = JSON.parse(embeddingData);
+
+        console.log(`[${requestId}] ✅ Embedding file downloaded and parsed successfully`);
+        console.log(`[${requestId}]   File size: ${embeddingData.length} bytes`);
+        console.log(`[${requestId}]   Vector dimensions: ${embeddingResult.embedding.length}`);
+
+        return embeddingResult;
+
+    } catch (error) {
+        console.error(`[${requestId}] ❌ Failed to download embedding file:`, error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to download embedding file from s3: ${errorMessage}`);
+    }
 }
 
-async function downloadEmbeddingData(bucketName: string, objectKey: string, requestId: string): Promise<EmbeddingRecord> {
-    console.log(`[${requestId}] 📥 Downloading embedding data from s3://${bucketName}/${objectKey}`);
-    const command = new GetObjectCommand({ Bucket: bucketName, Key: objectKey });
-    const response = await s3Client.send(command);
-    return JSON.parse(await response.Body!.transformToString());
+/**
+ * Store vector index entry in S3
+ */
+async function storeVectorIndexEntry(
+    objectKey: string,
+    vectorIndexEntry: VectorIndexEntry,
+    requestId: string
+): Promise<void> {
+    console.log(`[${requestId}] 💾 Storing vector index entry: ${objectKey}`);
+
+    try {
+        await s3Client.send(
+            new PutObjectCommand({
+                Bucket: VECTOR_INDEX_BUCKET,
+                Key: objectKey,
+                Body: JSON.stringify(vectorIndexEntry, null, 2),
+                ContentType: 'application/json',
+                Metadata: {
+                    'processing-status': 'completed',
+                    'document-id': vectorIndexEntry.documentId,
+                    'chunk-id': vectorIndexEntry.chunkId,
+                    'vector-id': vectorIndexEntry.metadata.vectorId,
+                    'dimensions': vectorIndexEntry.vector.length.toString(),
+                    'indexed-at': vectorIndexEntry.metadata.indexedAt,
+                    'source': vectorIndexEntry.metadata.source
+                }
+            })
+        );
+
+        console.log(`[${requestId}] ✅ Vector index entry stored successfully`);
+
+    } catch (error) {
+        console.error(`[${requestId}] ❌ Failed to store vector index entry:`, error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to store vector index entry to s3: ${errorMessage}`);
+    }
 } 
