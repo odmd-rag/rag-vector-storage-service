@@ -1,5 +1,5 @@
 import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure, S3Event } from 'aws-lambda';
-import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
 import { 
     UpsertRequestSchema, 
@@ -11,7 +11,7 @@ import {
     VectorMetadata 
 } from './schemas/vector-metadata.schema';
 
-const s3Client = new S3Client({ region: process.env.AWS_REGION || 'us-east-2' });
+const s3Client = new S3Client();
 
 const VECTOR_METADATA_BUCKET = process.env.VECTOR_METADATA_BUCKET!;
 const EMBEDDINGS_BUCKET_NAME = process.env.EMBEDDINGS_BUCKET_NAME!;
@@ -19,6 +19,39 @@ const HOME_SERVER_DOMAIN = process.env.HOME_SERVER_DOMAIN;
 
 if (!HOME_SERVER_DOMAIN) {
     throw new Error("HOME_SERVER_DOMAIN environment variable is not set.");
+}
+
+/**
+ * Retrieve JWT token from original document S3 metadata
+ */
+async function getJwtTokenFromDocument(bucketName: string, objectKey: string, requestId: string): Promise<string> {
+    try {
+        console.log(`[${requestId}] Retrieving JWT token from document metadata: s3://${bucketName}/${objectKey}`);
+        
+        const headCommand = new HeadObjectCommand({
+            Bucket: bucketName,
+            Key: objectKey
+        });
+        
+        const response = await s3Client.send(headCommand);
+        const jwtToken = response.Metadata?.['jwt-token'];
+        
+        if (!jwtToken) {
+            console.warn(`[${requestId}] JWT token not found in document metadata, checking environment fallback`);
+            const fallbackToken = process.env.SERVICE_JWT_TOKEN;
+            if (!fallbackToken) {
+                throw new Error('JWT token not found in document metadata and no SERVICE_JWT_TOKEN environment variable');
+            }
+            console.log(`[${requestId}] Using fallback JWT token from environment`);
+            return fallbackToken;
+        }
+        
+        console.log(`[${requestId}] Successfully retrieved JWT token from document metadata`);
+        return jwtToken;
+    } catch (error) {
+        console.error(`[${requestId}] Failed to retrieve JWT token from document metadata:`, error);
+        throw new Error(`Failed to retrieve JWT token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
 }
 
 // Represents the structure of the embedding-status/{documentId}.json object
@@ -105,7 +138,14 @@ async function processVectorTask(record: SQSRecord, requestId: string): Promise<
                 throw new Error(`Upsert request schema validation failed: ${validationError}`);
             }
 
-            const upsertResult = await upsertVectorsToHomeServer(upsertPayloads, requestId);
+            // Retrieve JWT token from original document metadata
+            const jwtToken = await getJwtTokenFromDocument(
+                embeddingStatus.originalDocument.bucketName,
+                embeddingStatus.originalDocument.objectKey,
+                requestId
+            );
+
+            const upsertResult = await upsertVectorsToHomeServer(upsertPayloads, jwtToken, requestId);
             console.log(`[${requestId}] Successfully upserted vectors to home server.`);
 
             const metadataKey = `vector-metadata/${documentId}/${randomUUID()}.json`;
@@ -180,19 +220,20 @@ async function prepareUpsertPayloads(status: EmbeddingStatus, requestId: string)
 /**
  * Sends the prepared vector data to the home vector server.
  */
-async function upsertVectorsToHomeServer(payloads: UpsertChunk[], requestId: string): Promise<any> {
+async function upsertVectorsToHomeServer(payloads: UpsertChunk[], jwtToken: string, requestId: string): Promise<any> {
     if (payloads.length === 0) {
         console.warn(`[${requestId}] No payloads to upsert. Skipping.`);
         return { success: true, message: "No data to upsert." };
     }
     
-    const url = `https://${HOME_SERVER_DOMAIN}/api/upsert`;
+    const url = `https://${HOME_SERVER_DOMAIN}/vector/upsert`;
     console.log(`[${requestId}] Posting ${payloads.length} vectors to ${url}`);
 
     const response = await fetch(url, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
+            'Authorization': `Bearer ${jwtToken}`,
             'x-request-id': requestId,
         },
         body: JSON.stringify({ chunks: payloads }),
