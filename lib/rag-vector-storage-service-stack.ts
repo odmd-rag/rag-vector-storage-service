@@ -19,6 +19,13 @@ import {RagVectorStorageEnver} from '@odmd-rag/contracts-lib-rag';
 import {OdmdShareOut} from '@ondemandenv/contracts-lib-base';
 import {StackProps} from "aws-cdk-lib";
 import {EmbeddingStorageProducer} from "@odmd-rag/contracts-lib-rag/dist/services/embedding";
+import { BucketDeployment, Source } from 'aws-cdk-lib/aws-s3-deployment';
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import { UpsertRequestSchema } from './handlers/src/schemas/upsert-request.schema';
+import { VectorMetadataSchema } from './handlers/src/schemas/vector-metadata.schema';
 
 
 export class RagVectorStorageServiceStack extends cdk.Stack {
@@ -54,6 +61,40 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
             publicReadAccess: false,
             blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
         });
+
+        // --- ATOMIC SCHEMA GENERATION AND DEPLOYMENT ---
+        // This all happens during 'cdk deploy' or 'cdk synth'
+
+        // 1. Get the Git SHA for versioning at deployment time
+        const gitSha = execSync('git rev-parse HEAD').toString().trim();
+
+        // 2. Generate schemas for both upsert request and vector metadata
+        const upsertRequestSchemaName = 'upsert-request';
+        const vectorMetadataSchemaName = 'vector-metadata';
+        const upsertRequestFileName = `${upsertRequestSchemaName}-${gitSha}.json`;
+        const vectorMetadataFileName = `${vectorMetadataSchemaName}-${gitSha}.json`;
+
+        // 4. Write the in-memory schemas to temporary files in the CDK asset staging area
+        const tempSchemaDir = path.join(__dirname, '..', 'cdk.out', 'schemas');
+        fs.mkdirSync(tempSchemaDir, { recursive: true });
+        
+        const tempUpsertRequestPath = path.join(tempSchemaDir, upsertRequestFileName);
+        const tempVectorMetadataPath = path.join(tempSchemaDir, vectorMetadataFileName);
+        
+        fs.writeFileSync(tempUpsertRequestPath, JSON.stringify(UpsertRequestSchema, null, 2));
+        fs.writeFileSync(tempVectorMetadataPath, JSON.stringify(VectorMetadataSchema, null, 2));
+
+        // 5. Deploy the just-generated schema files from the temp asset directory to S3
+        new BucketDeployment(this, 'VectorStorageSchemaDeployment', {
+            sources: [Source.asset(tempSchemaDir)],
+            destinationBucket: vectorMetadataBucket,
+            destinationKeyPrefix: 'schemas',
+            retainOnDelete: true, // Keep old schemas for audit purposes
+        });
+        
+        // 6. Construct the final S3 URLs for the contracts
+        const upsertRequestSchemaS3Url = `s3://${vectorMetadataBucket.bucketName}/schemas/${upsertRequestSchemaName}/${upsertRequestFileName}`;
+        const vectorMetadataSchemaS3Url = `s3://${vectorMetadataBucket.bucketName}/schemas/${vectorMetadataSchemaName}/${vectorMetadataFileName}`;
 
         const vectorBackupBucket = new s3.Bucket(this, 'VecBackupBucket', {
             versioned: true,
@@ -307,13 +348,15 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
 
         new OdmdShareOut(
             this, new Map([
-                [myEnver.vectorStorage.vectorDatabaseEndpoint, homeServerDomain],
+                [myEnver.vectorStorage, homeServerDomain],
                 [myEnver.vectorStorage.vectorIndexName, 'rag-documents'],
                 [myEnver.vectorStorage.vectorMetadataBucket, vectorMetadataBucket.bucketName],
                 [myEnver.vectorStorage.vectorBackupBucket, vectorBackupBucket.bucketName],
+                [myEnver.vectorStorage.upsertRequestSchemaS3Url, upsertRequestSchemaS3Url],
+                [myEnver.vectorStorage.vectorMetadataSchemaS3Url, vectorMetadataSchemaS3Url],
 
                 // Status API endpoint for WebUI tracking
-                [myEnver.statusApi.statusApiEndpoint, `https://${this.apiDomain}/status`],
+                [myEnver.statusApi, `https://${this.apiDomain}/status`],
             ])
         );
     }

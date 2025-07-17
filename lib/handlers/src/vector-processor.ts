@@ -1,6 +1,15 @@
 import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure, S3Event } from 'aws-lambda';
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
+import { 
+    UpsertRequestSchema, 
+    UpsertRequest, 
+    UpsertChunk 
+} from './schemas/upsert-request.schema';
+import { 
+    VectorMetadataSchema, 
+    VectorMetadata 
+} from './schemas/vector-metadata.schema';
 
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'us-east-2' });
 
@@ -12,24 +21,15 @@ if (!HOME_SERVER_DOMAIN) {
     throw new Error("HOME_SERVER_DOMAIN environment variable is not set.");
 }
 
-// Matches the contract of the home-vector-server
-interface UpsertRequest {
-    documentId: string;
-    s3Bucket: string;
-    s3Key: string;
-    chunkId: string;
-    text: string;
-    vector: number[];
-    metadata: Record<string, any>;
-}
-
 // Represents the structure of the embedding-status/{documentId}.json object
 interface EmbeddingStatus {
     documentId: string;
     processingId: string;
-    originalDocument?: {
-        bucket: string;
-        key: string;
+    originalDocument: {
+        bucketName: string;
+        objectKey: string;
+        contentType: string;
+        fileSize: number;
     };
     summary: {
         totalChunks: number;
@@ -42,6 +42,9 @@ interface EmbeddingStatus {
         s3_path_embedding: string;
         s3_path_content: string;
     }[];
+    embeddingTimestamp: string;
+    embeddingModel: string;
+    status: 'completed';
 }
 
 /**
@@ -88,10 +91,19 @@ async function processVectorTask(record: SQSRecord, requestId: string): Promise<
             const embeddingStatus = await downloadS3JsonObject<EmbeddingStatus>(sourceBucket, sourceKey, requestId);
             const documentId = embeddingStatus.documentId;
             console.log(`[${requestId}] Successfully downloaded embedding status for document: ${documentId}`);
-            console.log(`[${requestId}] Original document info:`, embeddingStatus.originalDocument);
 
             const upsertPayloads = await prepareUpsertPayloads(embeddingStatus, requestId);
             console.log(`[${requestId}] Prepared ${upsertPayloads.length} chunks for upsert.`);
+
+            // Validate the upsert request against schema before sending
+            const upsertRequestData: UpsertRequest = { chunks: upsertPayloads };
+            try {
+                UpsertRequestSchema.parse(upsertRequestData);
+                console.log(`[${requestId}] ✅ Upsert request schema validation passed`);
+            } catch (validationError) {
+                console.error(`[${requestId}] ❌ Upsert request schema validation failed:`, validationError);
+                throw new Error(`Upsert request schema validation failed: ${validationError}`);
+            }
 
             const upsertResult = await upsertVectorsToHomeServer(upsertPayloads, requestId);
             console.log(`[${requestId}] Successfully upserted vectors to home server.`);
@@ -115,10 +127,10 @@ async function processVectorTask(record: SQSRecord, requestId: string): Promise<
  * Downloads and parses a JSON object from S3.
  */
 async function downloadS3JsonObject<T>(bucket: string, key: string, requestId: string): Promise<T> {
+    console.log(`[${requestId}] Downloading from s3://${bucket}/${key}`);
     const command = new GetObjectCommand({ Bucket: bucket, Key: key });
     const response = await s3Client.send(command);
     const bodyString = await response.Body!.transformToString();
-    console.log(`downloadS3JsonObject: [${requestId}] Downloading from s3://${bucket}/${key}: ${bodyString}`);
     return JSON.parse(bodyString) as T;
 }
 
@@ -126,18 +138,17 @@ async function downloadS3JsonObject<T>(bucket: string, key: string, requestId: s
  * Downloads a text object from S3.
  */
 async function downloadS3TextObject(bucket: string, key: string, requestId: string): Promise<string> {
+    console.log(`[${requestId}] Downloading from s3://${bucket}/${key}`);
     const command = new GetObjectCommand({ Bucket: bucket, Key: key });
     const response = await s3Client.send(command);
-    const ret = await response.Body!.transformToString();
-    console.log(`downloadS3TextObject:[${requestId}] Downloading from s3://${bucket}/${key}: ${ret}`);
-    return ret;
+    return response.Body!.transformToString();
 }
 
 /**
  * Downloads chunk content and embeddings to prepare the payload for the vector server.
  */
-async function prepareUpsertPayloads(status: EmbeddingStatus, requestId: string): Promise<UpsertRequest[]> {
-    const payloads: UpsertRequest[] = [];
+async function prepareUpsertPayloads(status: EmbeddingStatus, requestId: string): Promise<UpsertChunk[]> {
+    const payloads: UpsertChunk[] = [];
 
     for (const ref of status.chunkReferences) {
         try {
@@ -148,8 +159,8 @@ async function prepareUpsertPayloads(status: EmbeddingStatus, requestId: string)
 
             payloads.push({
                 documentId: status.documentId,
-                s3Bucket: status.originalDocument?.bucket || 'unknown',
-                s3Key: status.originalDocument?.key || 'unknown',
+                s3Bucket: status.originalDocument.bucketName,
+                s3Key: status.originalDocument.objectKey,
                 chunkId: ref.chunkId,
                 text: content,
                 vector: embedding,
@@ -169,7 +180,7 @@ async function prepareUpsertPayloads(status: EmbeddingStatus, requestId: string)
 /**
  * Sends the prepared vector data to the home vector server.
  */
-async function upsertVectorsToHomeServer(payloads: UpsertRequest[], requestId: string): Promise<any> {
+async function upsertVectorsToHomeServer(payloads: UpsertChunk[], requestId: string): Promise<any> {
     if (payloads.length === 0) {
         console.warn(`[${requestId}] No payloads to upsert. Skipping.`);
         return { success: true, message: "No data to upsert." };
@@ -187,36 +198,14 @@ async function upsertVectorsToHomeServer(payloads: UpsertRequest[], requestId: s
         body: JSON.stringify({ chunks: payloads }),
     });
 
-    const responseText = await response.text();
-    console.log(`[${requestId}] Home server response: ${response.status}`);
-    
     if (!response.ok) {
-        console.error(`[${requestId}] Error from home server: ${response.status} ${response.statusText}`);
-        console.error(`[${requestId}] Response body: ${responseText}`);
+        const errorBody = await response.text();
+        console.error(`[${requestId}] Error from home server: ${response.status} ${response.statusText}`, errorBody);
         throw new Error(`Failed to upsert vectors: ${response.statusText}`);
     }
 
-    // Try to parse as JSON, fall back to plain text if it fails
-    try {
-        return JSON.parse(responseText);
-    } catch (jsonError) {
-        console.warn(`[${requestId}] Response is not valid JSON, treating as plain text response`);
-        console.warn(`[${requestId}] Response body: ${responseText}`);
-        
-        // If the response is HTML (like an error page), log it and throw an error
-        if (responseText.trim().startsWith('<!DOCTYPE') || responseText.trim().startsWith('<html')) {
-            console.error(`[${requestId}] Home server returned HTML instead of JSON. This usually indicates a server configuration issue.`);
-            throw new Error(`Home server returned HTML instead of JSON: ${responseText.substring(0, 200)}...`);
-        }
-        
-        // For other non-JSON responses, return a generic success response
-        return { 
-            success: true, 
-            message: "Upsert completed", 
-            rawResponse: responseText,
-            note: "Response was not JSON format"
-        };
-    }
+    console.log(`[${requestId}] Home server response: ${response.status}`);
+    return await response.json();
 }
 
 /**
@@ -231,14 +220,17 @@ async function createVectorMetadata(
     startTime: number,
     requestId: string
 ): Promise<void> {
-    const vectorMetadata = {
+    const vectorMetadataData: VectorMetadata = {
         documentId: embeddingStatus.documentId,
         status: 'indexed',
         indexedAt: new Date().toISOString(),
         processingTimeMs: Date.now() - startTime,
-        homeServerDomain: HOME_SERVER_DOMAIN,
+        homeServerDomain: HOME_SERVER_DOMAIN!,
         embeddingSummary: embeddingStatus.summary,
-        originalDocument: embeddingStatus.originalDocument,
+        originalDocument: {
+            bucket: embeddingStatus.originalDocument.bucketName,
+            key: embeddingStatus.originalDocument.objectKey
+        },
         upsertResult,
         metadata: {
             sourceStatusObjectKey: sourceKey,
@@ -247,10 +239,19 @@ async function createVectorMetadata(
         }
     };
 
+    // Validate the vector metadata against schema before storing
+    try {
+        VectorMetadataSchema.parse(vectorMetadataData);
+        console.log(`[${requestId}] ✅ Vector metadata schema validation passed`);
+    } catch (validationError) {
+        console.error(`[${requestId}] ❌ Vector metadata schema validation failed:`, validationError);
+        throw new Error(`Vector metadata schema validation failed: ${validationError}`);
+    }
+
     await s3Client.send(new PutObjectCommand({
         Bucket: VECTOR_METADATA_BUCKET,
         Key: metadataKey,
-        Body: JSON.stringify(vectorMetadata, null, 2),
+        Body: JSON.stringify(vectorMetadataData, null, 2),
         ContentType: 'application/json'
     }));
 }

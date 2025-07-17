@@ -10,9 +10,12 @@
     "clean:handlers": "cd lib/handlers && npm run clean",
     "watch": "tsc -w",
     "test": "jest",
+    "gen-schema": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev npx tsx .scripts/gen-ts-schema.ts",
     "ragStore-cdk-ls": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --profile default",
     "ragStore-cdk-ls-deps": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --show-dependencies --profile default",
-    "ragStore-cdk-synth": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk synth --all --profile default"
+    "ragStore-cdk-synth": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk synth --all --profile default",
+    "ragStore-cdk-diff": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk diff --all --profile default",
+    "ragStore-cdk-deploy": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk deploy --all --profile default"
   },
   "keywords": [
     "aws-cdk",
@@ -29,21 +32,27 @@
     "@aws-sdk/client-dynamodb": "^3.830.0",
     "@aws-sdk/client-s3": "^3.832.0",
     "@aws-sdk/client-sqs": "^3.831.0",
+    "@aws-sdk/client-ssm": "^3.826.0",
+    "@aws-sdk/client-sts": "^3.826.0",
     "@aws-sdk/util-dynamodb": "^3.830.0",
-    "aws-cdk-lib": "2.200.1",
+    "aws-cdk-lib": "2.203.1",
     "aws-lambda": "^1.0.7",
     "constructs": "^10.3.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@odmd-rag/contracts-lib-rag": "1.0.20",
+    "@odmd-rag/contracts-lib-rag": "1.0.29",
     "@types/aws-lambda": "^8.10.145",
     "@types/jest": "^29.5.13",
     "@types/node": "^22.5.4",
     "@types/node-fetch": "^2.6.11",
     "jest": "^29.7.0",
+    "json-schema-to-typescript": "^13.1.2",
     "cross-env": "^7.0.3",
     "ts-jest": "^29.2.5",
-    "typescript": "~5.6.2"
+    "tsx": "^4.7.0",
+    "typescript": "~5.6.2",
+    "zod-to-json-schema": "^3.23.0"
   }
 }

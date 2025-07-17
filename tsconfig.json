@@ -28,8 +28,14 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": "."
   },
+  "include": [
+    "lib/**/*.ts",
+    "src/**/*.ts",
+    ".scripts/**/*.ts"
+  ],
   "exclude": [
     "node_modules",
     "cdk.out",
