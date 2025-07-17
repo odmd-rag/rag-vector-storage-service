@@ -186,7 +186,7 @@ async function upsertVectorsToHomeServer(payloads: UpsertChunk[], requestId: str
         return { success: true, message: "No data to upsert." };
     }
     
-    const url = `http://${HOME_SERVER_DOMAIN}/api/upsert`;
+    const url = `https://${HOME_SERVER_DOMAIN}/api/upsert`;
     console.log(`[${requestId}] Posting ${payloads.length} vectors to ${url}`);
 
     const response = await fetch(url, {
