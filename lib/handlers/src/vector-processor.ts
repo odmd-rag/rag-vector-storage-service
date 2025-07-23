@@ -1,5 +1,9 @@
 import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure, S3Event } from 'aws-lambda';
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { SignatureV4 } from '@aws-sdk/signature-v4';
+import { HttpRequest } from '@aws-sdk/protocol-http';
+import { fromUtf8 } from '@aws-sdk/util-utf8';
 import { randomUUID } from 'crypto';
 import { 
     UpsertRequestSchema, 
@@ -12,6 +16,7 @@ import {
 } from './schemas/vector-metadata.schema';
 
 const s3Client = new S3Client();
+const stsClient = new STSClient();
 
 const VECTOR_METADATA_BUCKET = process.env.VECTOR_METADATA_BUCKET!;
 const EMBEDDINGS_BUCKET_NAME = process.env.EMBEDDINGS_BUCKET_NAME!;
@@ -19,6 +24,110 @@ const HOME_SERVER_DOMAIN = process.env.HOME_SERVER_DOMAIN;
 
 if (!HOME_SERVER_DOMAIN) {
     throw new Error("HOME_SERVER_DOMAIN environment variable is not set.");
+}
+
+/**
+ * Create and sign an HTTP request using AWS SigV4
+ */
+/**
+ * Create AWS SigV4 headers that can be validated by AWS STS
+ * This implements the HashiCorp Vault approach: create headers for STS validation
+ */
+async function createSignedRequest(
+    method: string, 
+    url: string, 
+    body: string, 
+    requestId: string
+): Promise<{ url: string; headers: Record<string, string> }> {
+    try {
+        console.log(`[${requestId}] Creating AWS SigV4 signed headers for STS validation`);
+        
+        // Get current AWS credentials and region
+        const region = process.env.AWS_REGION || 'us-east-1';
+        const credentials = {
+            accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+            secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+            sessionToken: process.env.AWS_SESSION_TOKEN
+        };
+        
+        // Parse URL
+        const urlObj = new URL(url);
+        
+        // Create a GetCallerIdentity request that STS can validate
+        // This is the key insight: we create STS-compatible headers
+        const stsRequest = new HttpRequest({
+            method: 'POST',
+            protocol: 'https:',
+            hostname: `sts.${region}.amazonaws.com`,
+            port: 443,
+            path: '/',
+            headers: {
+                'Content-Type': 'application/x-amz-json-1.1',
+                'X-Amz-Target': 'AWSSecurityTokenServiceV20110615.GetCallerIdentity',
+                'Host': `sts.${region}.amazonaws.com`
+            },
+            body: fromUtf8('{}')
+        });
+
+        // Create STS signer
+        const stsSigner = new SignatureV4({
+            service: 'sts',
+            region,
+            credentials
+        });
+
+        // Sign the STS request to get valid headers
+        const signedStsRequest = await stsSigner.sign(stsRequest);
+        
+        // Extract the signed headers that we can forward
+        const stsHeaders: Record<string, string> = {};
+        for (const [key, value] of Object.entries(signedStsRequest.headers)) {
+            stsHeaders[key] = Array.isArray(value) ? value.join(',') : value;
+        }
+
+        // Now create the actual request headers by combining STS auth with our request
+        const finalHeaders: Record<string, string> = {
+            // Use STS authentication headers
+            'Authorization': stsHeaders['authorization'] || stsHeaders['Authorization'],
+            'X-Amz-Date': stsHeaders['x-amz-date'] || stsHeaders['X-Amz-Date'],
+            'X-Amz-Content-Sha256': stsHeaders['x-amz-content-sha256'] || stsHeaders['X-Amz-Content-Sha256'],
+            
+            // Add our request-specific headers
+            'Content-Type': 'application/json',
+            'Host': urlObj.hostname,
+            'x-request-id': requestId,
+            'User-Agent': 'rag-vector-storage-service/1.0.0'
+        };
+
+        // Include security token if present (for temporary credentials)
+        if (credentials.sessionToken) {
+            finalHeaders['X-Amz-Security-Token'] = credentials.sessionToken;
+        }
+        
+        // Validate that we have all required headers
+        if (!finalHeaders['Authorization']) {
+            throw new Error('Missing Authorization header in signed request');
+        }
+        if (!finalHeaders['X-Amz-Date']) {
+            throw new Error('Missing X-Amz-Date header in signed request');
+        }
+        if (!finalHeaders['X-Amz-Content-Sha256']) {
+            throw new Error('Missing X-Amz-Content-Sha256 header in signed request');
+        }
+        
+        console.log(`[${requestId}] ✅ Created STS-compatible signed headers`);
+        console.log(`[${requestId}] Auth headers: ${Object.keys(finalHeaders).filter(k => k.toLowerCase().includes('amz')).join(', ')}`);
+        console.log(`[${requestId}] Region: ${region}, Has session token: ${!!credentials.sessionToken}`);
+        
+        return { 
+            url,
+            headers: finalHeaders
+        };
+        
+    } catch (error) {
+        console.error(`[${requestId}] ❌ Failed to create signed headers:`, error);
+        throw new Error(`Failed to create signed headers: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
 }
 
 
@@ -179,7 +288,7 @@ async function prepareUpsertPayloads(status: EmbeddingStatus, requestId: string)
 }
 
 /**
- * Sends the prepared vector data to the home vector server.
+ * Sends the prepared vector data to the home vector server using AWS SigV4 authentication.
  */
 async function upsertVectorsToHomeServer(payloads: UpsertChunk[], requestId: string): Promise<any> {
     if (payloads.length === 0) {
@@ -188,25 +297,38 @@ async function upsertVectorsToHomeServer(payloads: UpsertChunk[], requestId: str
     }
     
     const url = `https://${HOME_SERVER_DOMAIN}/vector/upsert`;
-    console.log(`[${requestId}] Posting ${payloads.length} vectors to ${url}`);
+    console.log(`[${requestId}] Posting ${payloads.length} vectors to ${url} with SigV4 authentication`);
 
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'x-request-id': requestId,
-        },
-        body: JSON.stringify({ chunks: payloads }),
-    });
+    try {
+        // Prepare request body
+        const requestBody = JSON.stringify({ chunks: payloads });
+        
+        // Create signed request
+        const signedRequest = await createSignedRequest('POST', url, requestBody, requestId);
+        
+        // Make the authenticated request
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: signedRequest.headers,
+            body: requestBody,
+        });
 
-    if (!response.ok) {
-        const errorBody = await response.text();
-        console.error(`[${requestId}] Error from home server: ${response.status} ${response.statusText}`, errorBody);
-        throw new Error(`Failed to upsert vectors: ${response.statusText}`);
+        if (!response.ok) {
+            const errorBody = await response.text();
+            console.error(`[${requestId}] Error from home server: ${response.status} ${response.statusText}`, errorBody);
+            throw new Error(`Failed to upsert vectors: ${response.status} ${response.statusText} - ${errorBody}`);
+        }
+
+        console.log(`[${requestId}] ✅ Home server response: ${response.status}`);
+        const result = await response.json();
+        console.log(`[${requestId}] Upsert result: ${result.message || 'Success'}`);
+        
+        return result;
+        
+    } catch (error) {
+        console.error(`[${requestId}] ❌ Failed to upsert vectors to home server:`, error);
+        throw error;
     }
-
-    console.log(`[${requestId}] Home server response: ${response.status}`);
-    return await response.json();
 }
 
 /**
