@@ -1,9 +1,10 @@
 import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure, S3Event } from 'aws-lambda';
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
-import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { STSClient } from '@aws-sdk/client-sts';
 import { SignatureV4 } from '@aws-sdk/signature-v4';
 import { HttpRequest } from '@aws-sdk/protocol-http';
 import { fromUtf8 } from '@aws-sdk/util-utf8';
+import { Sha256 } from '@aws-crypto/sha256-js';
 import { randomUUID } from 'crypto';
 import { 
     UpsertRequestSchema, 
@@ -16,7 +17,6 @@ import {
 } from './schemas/vector-metadata.schema';
 
 const s3Client = new S3Client();
-const stsClient = new STSClient();
 
 const VECTOR_METADATA_BUCKET = process.env.VECTOR_METADATA_BUCKET!;
 const EMBEDDINGS_BUCKET_NAME = process.env.EMBEDDINGS_BUCKET_NAME!;
@@ -69,11 +69,12 @@ async function createSignedRequest(
             body: fromUtf8('{}')
         });
 
-        // Create STS signer
+        // Create STS signer with hash constructor
         const stsSigner = new SignatureV4({
             service: 'sts',
             region,
-            credentials
+            credentials,
+            sha256: Sha256
         });
 
         // Sign the STS request to get valid headers
