@@ -243,7 +243,7 @@ export class RagVectorStorageServiceStack extends cdk.Stack {
 
         // CORS configuration
         const allowedOrigins = ['http://localhost:5173'];
-        const webUiDomain = `https://up.${ingestionEnver.targetRevision.value}.${ingestionEnver.owner.buildId}.${this.zoneName}`.toLowerCase();
+        const webUiDomain = `https://up-web.${ingestionEnver.targetRevision.value}.${ingestionEnver.owner.buildId}.${this.zoneName}`.toLowerCase();
         allowedOrigins.push(`https://${webUiDomain}`);
 
         this.httpApi = new apigatewayv2.HttpApi(this, 'VecApi', {
