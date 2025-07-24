@@ -33,7 +33,7 @@ if (!HOME_SERVER_DOMAIN) {
  * Create AWS SigV4 headers that can be validated by AWS STS
  * This implements the HashiCorp Vault approach: create headers for STS validation
  */
-async function createSignedRequest(
+export async function createSignedRequest(
     method: string, 
     url: string, 
     body: string, 
@@ -291,7 +291,7 @@ async function prepareUpsertPayloads(status: EmbeddingStatus, requestId: string)
 /**
  * Sends the prepared vector data to the home vector server using AWS SigV4 authentication.
  */
-async function upsertVectorsToHomeServer(payloads: UpsertChunk[], requestId: string): Promise<any> {
+export async function upsertVectorsToHomeServer(payloads: UpsertChunk[], requestId: string): Promise<any> {
     if (payloads.length === 0) {
         console.warn(`[${requestId}] No payloads to upsert. Skipping.`);
         return { success: true, message: "No data to upsert." };
