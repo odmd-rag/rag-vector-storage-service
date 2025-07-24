@@ -7,7 +7,7 @@
 
 // Configure environment for localhost testing
 process.env.AWS_REGION = process.env.AWS_REGION || 'us-east-2';
-process.env.HOME_SERVER_DOMAIN = 'localhost:3000';
+process.env.HOME_SERVER_DOMAIN = 'j4usgwn8adole.asuscomm.com';
 
 import { UpsertChunk } from './src/schemas/upsert-request.schema';
 import { upsertVectorsToHomeServer, createSignedRequest } from './src/vector-processor';
@@ -53,65 +53,73 @@ async function main() {
         await testCreateSignedRequestFunction(requestId);
         console.log('');
         
+        // THIRD: Test the full upsertVectorsToHomeServer function with localhost:3000
+        console.log('🧪 Step 3: Testing upsertVectorsToHomeServer with home-vector-server...');
+        await testUpsertVectorsToHomeServer(requestId);
+        console.log('');
+        
     } catch (error) {
         console.error('❌ Failed to load AWS credentials from profile:', error);
         console.error('Make sure you have configured AWS credentials in ~/.aws/credentials');
         process.exit(1);
     }
 
-    // Create test payload similar to what the lambda would send
-    const testChunks: UpsertChunk[] = [
-        {
-            documentId: `debug-${Date.now()}-test-document.txt`,
-            chunkId: `debug-chunk-1-${Date.now()}`,
-            text: 'This is a test chunk for debugging AWS STS authentication',
-            vector: new Array(1536).fill(0.1), // Mock embedding vector
-            s3Bucket: 'debug-test-bucket',
-            s3Key: 'debug-test-key.txt',
-            metadata: {
-                chunkIndex: 0,
-                totalChunks: 1,
-                model: 'text-embedding-ada-002'
-            }
-        }
-    ];
+}
 
+/**
+ * Test the full upsertVectorsToHomeServer function against localhost:3000
+ */
+async function testUpsertVectorsToHomeServer(requestId: string): Promise<void> {
     try {
-        console.log('📤 Calling upsertVectorsToHomeServer with test data...');
-        console.log(`   - Chunk count: ${testChunks.length}`);
-        console.log(`   - Document ID: ${testChunks[0].documentId}`);
-        console.log(`   - Vector dimensions: ${testChunks[0].vector.length}`);
-        console.log('');
+        console.log(`[${requestId}] 🏠 Testing full upsertVectorsToHomeServer flow...`);
+        
+        // Create test payload similar to what the lambda would send
+        const testChunks: UpsertChunk[] = [
+            {
+                documentId: `debug-${Date.now()}-test-document.txt`,
+                chunkId: `debug-chunk-1-${Date.now()}`,
+                text: 'This is a test chunk for debugging AWS STS authentication with home-vector-server',
+                vector: new Array(1536).fill(0.1), // Mock embedding vector
+                s3Bucket: 'debug-test-bucket',
+                s3Key: 'debug-test-key.txt',
+                metadata: {
+                    chunkIndex: 0,
+                    totalChunks: 1,
+                    model: 'text-embedding-ada-002'
+                }
+            }
+        ];
+
+        console.log(`[${requestId}] 📤 Calling upsertVectorsToHomeServer with test data...`);
+        console.log(`[${requestId}]    - Chunk count: ${testChunks.length}`);
+        console.log(`[${requestId}]    - Document ID: ${testChunks[0].documentId}`);
+        console.log(`[${requestId}]    - Vector dimensions: ${testChunks[0].vector.length}`);
+        console.log(`[${requestId}]    - Target: ${process.env.HOME_SERVER_DOMAIN}/upsert`);
 
         // This will call the ACTUAL upsertVectorsToHomeServer function from vector-processor.ts
         // which internally calls createSignedRequest and makes HTTP request to localhost:3000
         const result = await upsertVectorsToHomeServer(testChunks, requestId);
         
-        console.log('✅ Success! Upsert completed successfully');
-        console.log('📊 Result:', JSON.stringify(result, null, 2));
+        console.log(`[${requestId}] ✅ Success! Full upsert flow completed successfully`);
+        console.log(`[${requestId}] 📊 Result:`, JSON.stringify(result, null, 2));
+        console.log(`[${requestId}] 🎯 The home-vector-server successfully validated AWS STS authentication!`);
         
     } catch (error) {
-        console.error('❌ Debug test failed:');
-        console.error('Error message:', error instanceof Error ? error.message : 'Unknown error');
-        console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+        console.error(`[${requestId}] ❌ upsertVectorsToHomeServer test failed:`);
+        console.error(`[${requestId}] Error message:`, error instanceof Error ? error.message : 'Unknown error');
         
-        if (error instanceof Error && error.message.includes('Unexpected token')) {
-            console.log('');
-            console.log('🔍 Analysis: The error suggests STS is returning HTML instead of JSON');
-            console.log('   This typically indicates:');
-            console.log('   1. Network connectivity issues to AWS STS');
-            console.log('   2. DNS resolution problems');
-            console.log('   3. Corporate firewall/proxy intercepting requests');
-            console.log('   4. AWS region configuration issues');
-            console.log('');
-            console.log('💡 Next steps:');
-            console.log('   - Check if your local machine can reach sts.us-east-2.amazonaws.com');
-            console.log('   - Try running: curl -v https://sts.us-east-2.amazonaws.com/');
-            console.log('   - Verify AWS credentials are valid');
-            console.log('   - Check if behind corporate proxy/firewall');
+        if (error instanceof Error && error.message.includes('401')) {
+            console.error(`[${requestId}] 🚨 Authentication failed - home-vector-server rejected the STS signature`);
+            console.error(`[${requestId}] This could mean:`);
+            console.error(`[${requestId}]   - Home-vector-server middleware still has issues`);
+            console.error(`[${requestId}]   - STS validation is failing in the middleware`);
+            console.error(`[${requestId}]   - Check home-vector-server logs for detailed error`);
+        } else if (error instanceof Error && error.message.includes('ECONNREFUSED')) {
+            console.error(`[${requestId}] 🚨 Connection refused - is home-vector-server running on localhost:3000?`);
+            console.error(`[${requestId}] Start the server with: npm run dev`);
         }
         
-        process.exit(1);
+        throw error;
     }
 }
 
@@ -196,14 +204,13 @@ async function testDirectStsCredentials(requestId: string): Promise<void> {
 }
 
 /**
- * Test the createSignedRequest function (which creates headers for home vector server validation)
+ * Test the createSignedRequest function by validating its headers against AWS STS
  */
 async function testCreateSignedRequestFunction(requestId: string): Promise<void> {
     try {
         console.log(`[${requestId}] 🔐 Testing createSignedRequest function from vector-processor...`);
         
         // This function creates STS-compatible headers for the home vector server to validate
-        // It's NOT meant to make actual STS requests, but to create headers that STS can validate
         const testUrl = `http://localhost:3000/upsert`;
         const testBody = JSON.stringify({ chunks: [] });
         
@@ -211,7 +218,51 @@ async function testCreateSignedRequestFunction(requestId: string): Promise<void>
         
         console.log(`[${requestId}] ✅ createSignedRequest completed successfully`);
         console.log(`[${requestId}] 📋 Generated headers: ${Object.keys(signedRequest.headers).join(', ')}`);
-        console.log(`[${requestId}] 🎯 These headers are meant for home vector server validation, not direct STS calls`);
+        
+        // NOW: Validate that these headers actually work with AWS STS
+        console.log(`[${requestId}] 🧪 Testing if these headers can be validated by AWS STS...`);
+        
+        const region = process.env.AWS_REGION || 'us-east-2';
+        const stsUrl = `https://sts.${region}.amazonaws.com/`;
+        const stsBody = 'Action=GetCallerIdentity&Version=2011-06-15';
+        
+        // Use the headers from createSignedRequest to make actual STS call
+        const stsResponse = await fetch(stsUrl, {
+            method: 'POST',
+            headers: {
+                ...signedRequest.headers,
+                'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+                'Host': `sts.${region}.amazonaws.com`
+            },
+            body: stsBody
+        });
+        
+        console.log(`[${requestId}] 📡 STS Validation Response: ${stsResponse.status} ${stsResponse.statusText}`);
+        
+        if (stsResponse.ok) {
+            const responseText = await stsResponse.text();
+            if (responseText.includes('<GetCallerIdentityResponse')) {
+                console.log(`[${requestId}] ✅ SUCCESS! createSignedRequest headers are STS-compatible!`);
+                
+                const accountMatch = responseText.match(/<Account>(\d+)<\/Account>/);
+                const arnMatch = responseText.match(/<Arn>([^<]+)<\/Arn>/);
+                
+                if (accountMatch && arnMatch) {
+                    console.log(`[${requestId}] 🎯 Validated Identity - Account: ${accountMatch[1]}, Arn: ${arnMatch[1]}`);
+                }
+            }
+        } else {
+            const errorText = await stsResponse.text();
+            console.error(`[${requestId}] ❌ STS validation failed: ${stsResponse.status} ${stsResponse.statusText}`);
+            console.error(`[${requestId}] Error:`, errorText.substring(0, 300));
+            
+            if (errorText.includes('SignatureDoesNotMatch')) {
+                console.error(`[${requestId}] 🚨 The headers from createSignedRequest don't match AWS STS expectations!`);
+                console.error(`[${requestId}] This means the vector-processor signing logic has issues.`);
+            }
+            
+            throw new Error(`createSignedRequest headers failed STS validation: ${stsResponse.status}`);
+        }
         
     } catch (error) {
         console.error(`[${requestId}] ❌ createSignedRequest function test failed:`, error);

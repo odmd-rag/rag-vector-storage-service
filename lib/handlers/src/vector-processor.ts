@@ -1,6 +1,5 @@
 import { SQSEvent, SQSRecord, Context, SQSBatchResponse, SQSBatchItemFailure, S3Event } from 'aws-lambda';
-import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
-import { STSClient } from '@aws-sdk/client-sts';
+import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { SignatureV4 } from '@aws-sdk/signature-v4';
 import { HttpRequest } from '@aws-sdk/protocol-http';
 import { fromUtf8 } from '@aws-sdk/util-utf8';
@@ -54,7 +53,7 @@ export async function createSignedRequest(
         const urlObj = new URL(url);
         
         // Create a GetCallerIdentity request that STS can validate
-        // This is the key insight: we create STS-compatible headers
+        // Use the CORRECT STS request format
         const stsRequest = new HttpRequest({
             method: 'POST',
             protocol: 'https:',
@@ -62,11 +61,10 @@ export async function createSignedRequest(
             port: 443,
             path: '/',
             headers: {
-                'Content-Type': 'application/x-amz-json-1.1',
-                'X-Amz-Target': 'AWSSecurityTokenServiceV20110615.GetCallerIdentity',
+                'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
                 'Host': `sts.${region}.amazonaws.com`
             },
-            body: fromUtf8('{}')
+            body: fromUtf8('Action=GetCallerIdentity&Version=2011-06-15')
         });
 
         // Create STS signer with hash constructor
