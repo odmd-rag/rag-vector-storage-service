@@ -14,6 +14,9 @@ import {
     VectorMetadataSchema, 
     VectorMetadata 
 } from './schemas/vector-metadata.schema';
+import {
+    embeddingStatusSchemaS3UrlSchema
+} from "./__generated__/embeddingStatusSchemaS3Url-4MQZtU0VHCearmThbs4kUnCau2jcO7aj.zod";
 
 const s3Client = new S3Client();
 
@@ -130,31 +133,6 @@ export async function createSignedRequest(
 }
 
 
-// Represents the structure of the embedding-status/{documentId}.json object
-interface EmbeddingStatus {
-    documentId: string;
-    processingId: string;
-    originalDocument: {
-        bucketName: string;
-        objectKey: string;
-        contentType: string;
-        fileSize: number;
-    };
-    summary: {
-        totalChunks: number;
-        model: string;
-        totalTokens: number;
-    };
-    chunkReferences: {
-        chunkId: string;
-        chunkIndex: number;
-        s3_path_embedding: string;
-        s3_path_content: string;
-    }[];
-    embeddingTimestamp: string;
-    embeddingModel: string;
-    status: 'completed';
-}
 
 /**
  * Lambda handler for processing vector storage tasks from SQS.
@@ -197,7 +175,7 @@ async function processVectorTask(record: SQSRecord, requestId: string): Promise<
         const startTime = Date.now();
         
         try {
-            const embeddingStatus = await downloadS3JsonObject<EmbeddingStatus>(sourceBucket, sourceKey, requestId);
+            const embeddingStatus = await downloadS3JsonObject<embeddingStatusSchemaS3UrlSchema>(sourceBucket, sourceKey, requestId);
             const documentId = embeddingStatus.documentId;
             console.log(`[${requestId}] Successfully downloaded embedding status for document: ${documentId}`);
 
@@ -256,7 +234,7 @@ async function downloadS3TextObject(bucket: string, key: string, requestId: stri
 /**
  * Downloads chunk content and embeddings to prepare the payload for the vector server.
  */
-async function prepareUpsertPayloads(status: EmbeddingStatus, requestId: string): Promise<UpsertChunk[]> {
+async function prepareUpsertPayloads(status: embeddingStatusSchemaS3UrlSchema, requestId: string): Promise<UpsertChunk[]> {
     const payloads: UpsertChunk[] = [];
 
     for (const ref of status.chunkReferences) {
@@ -335,7 +313,7 @@ export async function upsertVectorsToHomeServer(payloads: UpsertChunk[], request
  */
 async function createVectorMetadata(
     metadataKey: string,
-    embeddingStatus: EmbeddingStatus,
+    embeddingStatus: embeddingStatusSchemaS3UrlSchema,
     upsertResult: any,
     sourceBucket: string,
     sourceKey: string,
