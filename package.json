@@ -10,7 +10,7 @@
     "clean:handlers": "cd lib/handlers && npm run clean",
     "watch": "tsc -w",
     "test": "jest",
-    "gen-schema": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev npx tsx .scripts/gen-ts-schema.ts",
+    "ragStore-gen-schema": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev npx tsx bin/generate-schemas.ts",
     "ragStore-cdk-ls": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --profile default",
     "ragStore-cdk-ls-deps": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk ls --show-dependencies --profile default",
     "ragStore-cdk-synth": "tsc --build && cross-env ODMD_build_id=ragStore ODMD_rev_ref=b..dev cdk synth --all --profile default",
