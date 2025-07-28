@@ -16,7 +16,7 @@ import {
 } from './schemas/vector-metadata.schema';
 import {
     embeddingStatusSchemaS3UrlSchema
-} from "./__generated__/embeddingStatusSchemaS3Url-4MQZtU0VHCearmThbs4kUnCau2jcO7aj.zod";
+} from "./__generated__/embeddingStatusSchemaS3Url-wZVN9vLhchyLjjDHNMLVNMlI9iR5B25..zod";
 
 const s3Client = new S3Client();
 
