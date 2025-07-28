@@ -2,8 +2,7 @@
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import {RagVectorStorageServiceStack} from '../lib/rag-vector-storage-service-stack';
-import {RagContracts, RagVectorStorageEnver} from '@odmd-rag/contracts-lib-rag';
-import {SchemaTypeGenerator} from "./generate-schemas";
+import {RagContracts, RagVectorStorageEnver, SchemaTypeGenerator} from '@odmd-rag/contracts-lib-rag';
 
 const app = new cdk.App({autoSynth: false});
 
@@ -16,11 +15,10 @@ async function main() {
 
     new RagContracts(app);
 
-    // Generate schema types from upstream embedding service for handlers
-    const gen = new SchemaTypeGenerator();
-    await gen.run();
-
     const targetEnver = RagContracts.inst.getTargetEnver() as RagVectorStorageEnver;
+
+    const gen = new SchemaTypeGenerator(targetEnver, [targetEnver.embeddingStatusSchemaS3Url]);
+    await gen.run();
 
     new RagVectorStorageServiceStack(app, targetEnver, {
         env: {
